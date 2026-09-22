@@ -1,0 +1,44 @@
+fastapi==0.116.1
+uvicorn[standard]==0.29.0
+
+SQLAlchemy==2.0.43
+asyncpg==0.30.0
+alembic==1.16.5
+
+pydantic==2.7.1
+pydantic-settings==2.10.1
+python-dotenv==1.0.1
+
+requests==2.32.5
+httpx==0.28.1
+
+prometheus-fastapi-instrumentator==7.0.0
+
+# auth / security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+PyJWT==2.10.1
+
+
+# tracing libraries
+opentelemetry-sdk==1.37.0
+opentelemetry-exporter-otlp==1.37.0
+opentelemetry-instrumentation-fastapi==0.58b0
+opentelemetry-instrumentation-logging==0.58b0
+opentelemetry-instrumentation-requests==0.58b0
+opentelemetry-instrumentation-httpx==0.58b0
+
+aiokafka==0.12.0
+jdatetime==5.2.0
+
+redis[async]==7.0.0
+python-multipart==0.0.21
+aiofiles==23.2.1
+
+# device detection
+user-agents==2.2.0
+ua-parser==0.18.0
+
+# geo ip
+geoip2==4.8.0

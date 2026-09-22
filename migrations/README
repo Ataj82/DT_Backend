@@ -1,0 +1,7 @@
+Generic single-database configuration with an async dbapi.
+
+
+## this for make migration
+docker compose run --rm -v ./services/backend:/app bot-migrate revision --autogenerate -m "inint model" 
+
+docker compose run --rm -v ./services/backend:/app bot-migrate upgrade head

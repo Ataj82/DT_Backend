@@ -1,0 +1,30 @@
+http:
+  routers:
+    # 1. Microservice Routing for Legacy LLM and Processing Services
+    legacy-llm-router:
+      rule: "PathPrefix(`/api/ask`) || PathPrefix(`/api/generate-pdf/`) || PathPrefix(`/api/admin`) || PathPrefix(`/api/quiz`) || PathPrefix(`/api/contexts`) || PathPrefix(`/api/voice`)"
+      service: legacy-llm-service
+      entryPoints:
+        - web
+      priority: 100
+
+    # 2. Frontend fallback route
+    frontend-host-router:
+      rule: "PathPrefix(`/`)"
+      service: frontend-host-service
+      entryPoints:
+        - web
+      priority: 10
+
+  services:
+    legacy-llm-service:
+      loadBalancer:
+        servers:
+          - url: "http://172.20.13.39:8506"
+        passHostHeader: false
+
+    frontend-host-service:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:5173"
+        passHostHeader: true
