@@ -12,7 +12,8 @@ RUN set -eux;     rm -f /etc/apt/sources.list;     rm -f /etc/apt/sources.list.d
 # ---------------------------------------------------
 # Set Runflare Mirror for pip
 # ---------------------------------------------------
-ENV PIP_INDEX_URL=https://pypi.devneeds.ir/simple/
+ENV PIP_INDEX_URL=https://mirror-pypi.runflare.com/simple/
+ENV PIP_TRUSTED_HOST=mirror-pypi.runflare.com
 
 
 # Copy only requirements first to cache the pip install step
