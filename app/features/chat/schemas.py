@@ -16,6 +16,7 @@ class ChatMessageItem(BaseModel):
     time: str
     date: str
     feedback: Optional[str] = None
+    comments: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
 
 class ChatHistoryMessageCreate(BaseModel):
     text: str
@@ -29,6 +30,11 @@ class ChatHistoryMessageCreate(BaseModel):
 
 class MessageFeedbackRequest(BaseModel):
     feedback: Optional[str] = None
+
+
+class MessageCommentCreate(BaseModel):
+    teacher_name: str
+    comment: str
 
 # ============================================================
 # Chat

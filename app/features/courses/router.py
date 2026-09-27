@@ -96,6 +96,16 @@ async def get_all_courses(
             for msg in res_msg.scalars().all():
                 latest_messages[msg.chat_id] = msg
 
+    # Resolve real teacher names from users table
+    teachers_map: Dict[UUID, str] = {}
+    teacher_ids = [l.teacher_id for l in lessons if l.teacher_id]
+    if teacher_ids:
+        stmt_t = select(User).where(User.user_id.in_(teacher_ids))
+        res_t = await db.execute(stmt_t)
+        for t_user in res_t.scalars().all():
+            full = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
+            teachers_map[t_user.user_id] = full
+
     courses = []
     for l in lessons:
         msg = latest_messages.get(l.lesson_id)
@@ -109,6 +119,8 @@ async def get_all_courses(
                 else (l.description or "")
             )
             dt_str = l.created_at.isoformat() if l.created_at else datetime.now(timezone.utc).isoformat()
+
+        t_name = teachers_map.get(l.teacher_id)
 
         courses.append(
             CourseResponse(
@@ -124,6 +136,8 @@ async def get_all_courses(
                 photo_url=l.avatar_url,
                 date=dt_str,
                 unreadCount=0,
+                teacher_name=t_name,
+                instructor_name=t_name,
                 isActive=l.is_active if l.is_active is not None else True,
                 is_active=l.is_active if l.is_active is not None else True,
             )
@@ -219,6 +233,14 @@ async def get_course_by_id(
         )
         dt_str = lesson.created_at.isoformat() if lesson.created_at else datetime.now(timezone.utc).isoformat()
 
+    teacher_name = None
+    if lesson.teacher_id:
+        stmt_t = select(User).where(User.user_id == lesson.teacher_id)
+        res_t = await db.execute(stmt_t)
+        t_user = res_t.scalar_one_or_none()
+        if t_user:
+            teacher_name = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
+
     return CourseResponse(
         id=lesson.lesson_id,
         title=lesson.title,
@@ -232,6 +254,8 @@ async def get_course_by_id(
         photo_url=lesson.avatar_url,
         date=dt_str,
         unreadCount=0,
+        teacher_name=teacher_name,
+        instructor_name=teacher_name,
         isActive=lesson.is_active if lesson.is_active is not None else True,
         is_active=lesson.is_active if lesson.is_active is not None else True,
     )
@@ -249,11 +273,21 @@ async def get_course_details(course_id: str, db: AsyncSession = Depends(get_db))
             detail="Course not found",
         )
 
+    teacher_name = None
+    if lesson.teacher_id:
+        stmt_t = select(User).where(User.user_id == lesson.teacher_id)
+        res_t = await db.execute(stmt_t)
+        t_user = res_t.scalar_one_or_none()
+        if t_user:
+            teacher_name = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
+
     return CourseDetailResponse(
         courseId=lesson.lesson_id,
         name=lesson.title,
         nameFa=lesson.title,
         nameEn=lesson.title,
+        teacher_name=teacher_name,
+        instructor_name=teacher_name,
         startDate=lesson.start_date.strftime("%Y-%m-%d") if lesson.start_date else "2026-04-10",
         endDate=lesson.end_date.strftime("%Y-%m-%d") if lesson.end_date else "2026-08-20",
         description=lesson.description or "",

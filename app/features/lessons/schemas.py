@@ -1,5 +1,5 @@
 # app/features/lessons/schemas.py
-from typing import Optional, List
+from typing import Optional, List, Union, Any
 from uuid import UUID
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
@@ -125,16 +125,35 @@ class LessonQuizCreate(BaseModel):
     duration_minutes: Optional[int] = Field(None, gt=0)
     max_attempts: int = Field(1, ge=1)
     pass_score: int = Field(70, ge=0, le=100)
+    
+    # Telegram Accordion Exam Scheduling
+    goals: List[Union[str, dict[str, Any]]] = Field(default_factory=list)
+    student_ids: List[Union[UUID, str]] = Field(default_factory=list)
+    gap_minutes: Optional[int] = 5
+    exam_date: Optional[str] = None
+    start_at: Optional[Union[datetime, str]] = None
+    end_at: Optional[Union[datetime, str]] = None
+    materials: Optional[List[Union[str, dict[str, Any]]]] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class LessonQuizResponse(BaseModel):
     quiz_id: UUID
+    lesson_id: Optional[UUID] = None
     title: str
-    description: Optional[str]
-    is_active: bool
-    created_at: datetime
+    description: Optional[str] = None
+    is_active: bool = True
+    duration_minutes: Optional[int] = None
+    goals: List[Union[str, dict[str, Any]]] = Field(default_factory=list)
+    student_ids: List[Union[UUID, str]] = Field(default_factory=list)
+    gap_minutes: Optional[int] = 5
+    exam_date: Optional[str] = None
+    start_at: Optional[Union[datetime, str]] = None
+    end_at: Optional[Union[datetime, str]] = None
+    created_at: Optional[datetime] = None
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
 # ========================= Attempt =========================

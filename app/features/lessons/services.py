@@ -239,11 +239,170 @@ class LessonService:
     async def create_quiz(
         self, lesson_id: UUID, teacher_id: UUID, payload: LessonQuizCreate
     ) -> LessonQuizResponse:
+        data = payload.model_dump(exclude_unset=True)
+        if "student_ids" in data and data["student_ids"]:
+            data["student_ids"] = [str(sid) for sid in data["student_ids"]]
+
+        from datetime import datetime as dt, timezone, timedelta
+        tehran_tz = timezone(timedelta(hours=3, minutes=30))
+
+        def _parse_time_val(val):
+            if not val:
+                return None
+            if isinstance(val, dt):
+                return val if val.tzinfo is not None else val.replace(tzinfo=timezone.utc)
+            s = str(val).strip()
+            # ISO timestamp string
+            try:
+                res = dt.fromisoformat(s.replace("Z", "+00:00"))
+                if res.tzinfo is None:
+                    res = res.replace(tzinfo=timezone.utc)
+                return res
+            except Exception:
+                pass
+            # HH:MM local clock string
+            try:
+                t = dt.strptime(s, "%H:%M").time()
+                local_now = dt.now(tehran_tz)
+                local_dt = dt.combine(local_now.date(), t, tzinfo=tehran_tz)
+                return local_dt.astimezone(timezone.utc)
+            except Exception:
+                return None
+
+        if "start_at" in data:
+            data["start_at"] = _parse_time_val(data["start_at"])
+        if "end_at" in data:
+            data["end_at"] = _parse_time_val(data["end_at"])
+
+        materials = data.pop("materials", None)
+
         quiz = await self.repo.create_quiz(
             lesson_id=lesson_id,
             teacher_id=teacher_id,
-            **payload.model_dump(exclude_unset=True)
+            **data
         )
+
+        # Auto-sync with Adaptive Exam Pipeline
+        try:
+            from app.features.exam_pipeline.goals.models import GoalModel
+            from app.features.exam_pipeline.api.dependencies import get_framework
+            from app.features.exam_pipeline.multiuser.models import User as PipelineUser, UserRole as PipelineUserRole
+
+            fw = get_framework()
+            mu_svc = fw.services.multi_user_service
+
+            prof = mu_svc.repository.get_user(str(teacher_id))
+            if not prof:
+                prof = PipelineUser(
+                    id=str(teacher_id),
+                    email=f"teacher_{teacher_id}@dt.internal",
+                    display_name="Teacher",
+                    password_hash="",
+                    role=PipelineUserRole.PROFESSOR,
+                )
+                mu_svc.repository.save_user(prof)
+
+            from app.features.exam_pipeline.knowledge.models import KnowledgeBase
+
+            kb_id = f"kb_{lesson_id}"
+            kb = fw.services.knowledge_service.get_knowledge_base(kb_id)
+            if not kb:
+                kb = KnowledgeBase(
+                    id=kb_id,
+                    title=f"Knowledge Base: {quiz.title}",
+                    description=quiz.description or "",
+                )
+                fw.services.knowledge_service.save(kb)
+
+            goals_list = data.get("goals") or [f"مباحث آزمون {quiz.title}"]
+            dur_mins = data.get("duration_minutes") or 15
+            goal_model = GoalModel.create_from_input(
+                knowledge_base_id=kb_id,
+                goals_data=goals_list,
+                title=quiz.title,
+                course_id=str(lesson_id),
+                lesson_id=str(lesson_id),
+                total_duration_minutes=dur_mins,
+            )
+            fw.services.goal_service.save(goal_model)
+            allocations = goal_model.calculate_time_allocations(dur_mins * 60)
+
+            gap_m = data.get("gap_minutes") or 5
+            assignment = mu_svc.create_assignment(
+                professor=prof,
+                title=quiz.title,
+                description=quiz.description or f"آزمون درس {quiz.title}",
+                knowledge_base_id=kb_id,
+                goal_model_id=goal_model.id,
+                duration_seconds=dur_mins * 60,
+                goal_time_allocations_seconds=allocations,
+                passing_threshold=0.70,
+                allow_followup_questions=True,
+                starts_at=quiz.start_at,
+                ends_at=quiz.end_at,
+                assignment_id=str(quiz.quiz_id),
+            )
+
+            if assignment.configuration_snapshot is None:
+                assignment.configuration_snapshot = {}
+            assignment.configuration_snapshot["gap_minutes"] = gap_m
+            if materials:
+                assignment.configuration_snapshot["materials"] = materials
+
+            student_ids = data.get("student_ids") or []
+            cleaned_student_ids = []
+            if student_ids:
+                cleaned_student_ids = [str(s).strip() for s in student_ids if str(s).strip()]
+                for sid in cleaned_student_ids:
+                    existing_st = mu_svc.repository.get_user(sid)
+                    if not existing_st or existing_st.role != PipelineUserRole.STUDENT:
+                        mu_svc.repository.save_user(
+                            PipelineUser(
+                                id=sid,
+                                email=f"{sid}@dt.internal",
+                                display_name=f"Student {sid}",
+                                password_hash="",
+                                role=PipelineUserRole.STUDENT,
+                            )
+                        )
+                try:
+                    mu_svc.enroll_students(
+                        professor=prof,
+                        assignment_id=assignment.id,
+                        student_ids=cleaned_student_ids,
+                    )
+                except Exception as enroll_err:
+                    import logging
+                    logging.getLogger(__name__).warning("Enroll warning in lesson quiz sync: %s", enroll_err)
+
+                # Pre-assign initial time slots
+                try:
+                    from app.features.exam_pipeline.api.routers.exam_requests import _generate_time_slots
+                    _, _, init_slots = _generate_time_slots(
+                        assignment.starts_at,
+                        assignment.ends_at,
+                        duration_minutes=dur_mins,
+                        gap_minutes=gap_m,
+                    )
+                    student_slots = {}
+                    for i, sid in enumerate(cleaned_student_ids):
+                        if i < len(init_slots):
+                            student_slots[sid] = {
+                                "slot_index": init_slots[i].slot_index,
+                                "start_time": init_slots[i].start_time,
+                                "end_time": init_slots[i].end_time,
+                            }
+                    assignment.configuration_snapshot["student_slots"] = student_slots
+                    mu_svc.repository.save_assignment(assignment)
+                except Exception as slot_err:
+                    import logging
+                    logging.getLogger(__name__).warning("Initial slots generation error: %s", slot_err)
+
+            mu_svc.publish_assignment(professor=prof, assignment_id=assignment.id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Adaptive exam pipeline sync error: %s", e)
+
         return LessonQuizResponse.model_validate(quiz)
 
     async def _create_bot_chat_for_student(

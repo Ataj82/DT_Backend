@@ -15,6 +15,7 @@ from sqlalchemy import (
 )
 import sqlalchemy as sa
 from sqlalchemy.orm import relationship
+from app.features.chat.models import MessageAttachment
 
 
 class Lesson(Base):
@@ -139,6 +140,12 @@ class LessonQuiz(Base):
     max_attempts = Column(Integer, default=1)
     pass_score = Column(Integer, default=70)
     
+    # Telegram Accordion & Exam Scheduling fields
+    goals = Column(JSONB, nullable=True, server_default="[]")
+    student_ids = Column(JSONB, nullable=True, server_default="[]")
+    gap_minutes = Column(Integer, default=5, nullable=True)
+    exam_date = Column(String(50), nullable=True)
+
     is_active = Column(Boolean, default=True)
     start_at = Column(DateTime(timezone=True), nullable=True)
     end_at = Column(DateTime(timezone=True), nullable=True)

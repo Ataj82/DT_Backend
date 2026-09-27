@@ -16,6 +16,8 @@ class CourseResponse(BaseModel):
     photo_url: Optional[str] = None
     date: str
     unreadCount: int = 0
+    teacher_name: Optional[str] = None
+    instructor_name: Optional[str] = None
     isActive: bool = True
     is_active: bool = True
 
@@ -24,6 +26,8 @@ class CourseDetailResponse(BaseModel):
     name: str
     nameFa: str
     nameEn: Optional[str] = None
+    teacher_name: Optional[str] = None
+    instructor_name: Optional[str] = None
     startDate: Optional[str] = "2026-03-01"
     endDate: Optional[str] = "2026-07-01"
     description: Optional[str] = ""

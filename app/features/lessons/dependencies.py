@@ -15,14 +15,12 @@ async def require_lesson_teacher(
 ) -> User:
     repo = LessonRepository(db)
     lesson = await repo.get_lesson(lesson_id)
-    # if current_user.user_type != "TEACHER" or "ADMIN":
-    #     raise HTTPException(status_code=403, detail="Teacher access required")
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found")
-    if lesson.teacher_id != current_user.user_id:
-        raise HTTPException(status_code=403, detail="Teacher access required")
-    
-    return current_user
+    u_type = (current_user.user_type or "").upper()
+    if u_type in {"TEACHER", "ADMIN", "PROFESSOR", "INSTRUCTOR"} or lesson.teacher_id == current_user.user_id:
+        return current_user
+    raise HTTPException(status_code=403, detail="Teacher access required")
 
 
 async def require_lesson_member(
@@ -34,7 +32,8 @@ async def require_lesson_member(
     lesson = await repo.get_lesson(lesson_id)
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found")
-    if lesson.teacher_id == current_user.user_id:
+    u_type = (current_user.user_type or "").upper()
+    if u_type in {"TEACHER", "ADMIN", "PROFESSOR", "INSTRUCTOR"} or lesson.teacher_id == current_user.user_id:
         return current_user
     member = await repo.get_member(lesson_id, current_user.user_id)
     

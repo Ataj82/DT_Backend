@@ -225,6 +225,25 @@ class AuthService:
                     user.last_name = "اله بخش"
                     await self.db.flush()
 
+            if user.user_type == "STUDENT":
+                try:
+                    from app.features.lessons.models import LessonMember
+                    OS_COURSE_UUID = uuid.UUID("c0000000-0000-4000-8000-000000000001")
+                    stmt_mem = select(LessonMember).where(
+                        LessonMember.lesson_id == OS_COURSE_UUID,
+                        LessonMember.user_id == user.user_id,
+                    )
+                    res_mem = await self.db.execute(stmt_mem)
+                    if not res_mem.scalar_one_or_none():
+                        self.db.add(LessonMember(
+                            lesson_id=OS_COURSE_UUID,
+                            user_id=user.user_id,
+                            role="STUDENT",
+                        ))
+                        await self.db.flush()
+                except Exception:
+                    pass
+
         if not user:
             u_lower = username.lower()
             if "allahbakhsh" in u_lower or "allah" in u_lower or "elahbakhsh" in u_lower or "elah" in u_lower or "mohammad" in u_lower:

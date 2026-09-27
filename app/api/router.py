@@ -6,6 +6,7 @@ from app.features.lessons.router import router as lesson_router
 from app.features.courses.router import router as courses_router
 from app.features.students.router import router as students_router
 from app.features.navigation.router import router as navigation_router
+from app.features.exam_pipeline.router import router as exam_pipeline_router
 
 api_router = APIRouter()
 
@@ -16,3 +17,7 @@ api_router.include_router(students_router, tags=["Students"])
 api_router.include_router(navigation_router, prefix="/navigation", tags=["Navigation"])
 api_router.include_router(chat_router, prefix="/chats", tags=["Chats"])
 api_router.include_router(lesson_router, prefix="/lessons", tags=["Lessons"])
+
+# ==================== Adaptive Exam Pipeline ====================
+api_router.include_router(exam_pipeline_router, prefix="/exam-pipeline", tags=["Adaptive Exam Pipeline"])
+api_router.include_router(exam_pipeline_router)

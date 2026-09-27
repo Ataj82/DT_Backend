@@ -129,6 +129,23 @@ async def startup_event():
     except Exception as e:
         print(f"[startup] Warning: seed database skipped or error: {e}")
 
+    try:
+        from app.features.exam_pipeline.api.dependencies import get_framework
+        from app.features.exam_pipeline.api.dependencies_multiuser import get_multiuser_service
+        from app.features.exam_pipeline.api.routers.exam_requests import _sync_db_quizzes_to_pipeline
+        from app.features.exam_pipeline.exceptions.handlers import register_exception_handlers
+        fastapi_instance = globals()["app"]
+        fw = get_framework()
+        fastapi_instance.state.assessment_framework = fw
+        register_exception_handlers(fastapi_instance)
+        print("[startup] Adaptive exam pipeline framework initialized successfully.")
+
+        svc = get_multiuser_service()
+        await _sync_db_quizzes_to_pipeline(svc, fw)
+        print("[startup] Synced DB quizzes into adaptive pipeline on startup.")
+    except Exception as e:
+        print(f"[startup] Warning: exam pipeline framework init error: {e}")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -158,8 +175,8 @@ def read_root():
 app.include_router(api_router, prefix="/api/v1")
 
 from uuid import UUID
-from app.features.chat.router import submit_message_feedback
-from app.features.chat.schemas import MessageFeedbackRequest
+from app.features.chat.router import submit_message_feedback, add_message_comment, delete_message_comment
+from app.features.chat.schemas import MessageFeedbackRequest, MessageCommentCreate
 
 @app.post("/api/v1/messages/{message_id}/feedback", tags=["Chats"])
 async def message_feedback_alias(
@@ -168,3 +185,20 @@ async def message_feedback_alias(
     db: AsyncSession = Depends(get_db),
 ):
     return await submit_message_feedback(message_id, payload, db)
+
+@app.post("/api/v1/messages/{message_id}/comments", tags=["Chats"])
+async def message_comment_add_alias(
+    message_id: UUID,
+    payload: MessageCommentCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    return await add_message_comment(message_id, payload, request, db)
+
+@app.delete("/api/v1/messages/{message_id}/comments/{comment_id}", tags=["Chats"])
+async def message_comment_delete_alias(
+    message_id: UUID,
+    comment_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    return await delete_message_comment(message_id, comment_id, db)

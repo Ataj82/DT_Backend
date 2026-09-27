@@ -1,7 +1,8 @@
 import asyncio
 import logging
+import uuid
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import select
 from app.core.database import async_session, engine, Base
@@ -30,7 +31,7 @@ STUDENT_ROSTER = [
     {"num_id": 102, "name": "محمد محمدی", "status": "online"},
     {"num_id": 103, "name": "سارا امینی", "status": "online"},
     {"num_id": 104, "name": "کیانا عباسی", "status": "online"},
-    {"num_id": 105, "name": "علی رضایی", "status": "offline"},
+    {"num_id": 105, "name": "علیرضا رضایی", "status": "online"},
     {"num_id": 106, "name": "فاطمه حسینی", "status": "online"},
     {"num_id": 107, "name": "امیرحسین مرادی", "status": "offline"},
     {"num_id": 108, "name": "مریم جعفری", "status": "online"},
@@ -117,7 +118,7 @@ async def seed_database():
         logger.info("Seeding students roster with Persian names and UUIDs...")
         for item in STUDENT_ROSTER:
             st_uuid = student_uuid_from_num(item["num_id"])
-            username = f"student_{item['num_id']}"
+            username = "alireza_rezaei" if item["num_id"] == 105 else f"student_{item['num_id']}"
             parts = item["name"].split(" ", 1)
             first_name = parts[0]
             last_name = parts[1] if len(parts) > 1 else ""
@@ -154,6 +155,32 @@ async def seed_database():
                     role="STUDENT",
                 )
                 session.add(member)
+
+            # Seed realistic student user_sessions
+            stmt_sess = select(UserSession).where(UserSession.user_id == st_uuid)
+            res_sess = await session.execute(stmt_sess)
+            if not res_sess.scalar_one_or_none():
+                now = datetime.now(timezone.utc)
+                if item.get("status") == "online":
+                    last_act = now - timedelta(minutes=1 + (item["num_id"] % 3))
+                elif "recently" in item.get("status", ""):
+                    last_act = now - timedelta(hours=3 + (item["num_id"] % 5))
+                else:
+                    last_act = now - timedelta(hours=10 + (item["num_id"] % 18))
+
+                import secrets
+                st_sess = UserSession(
+                    user_session_id=uuid.uuid4(),
+                    user_id=st_uuid,
+                    refresh_token_hash=secrets.token_hex(32),
+                    device_name="Mobile Browser",
+                    device_type="mobile",
+                    is_mobile=True,
+                    created_at=last_act - timedelta(days=7),
+                    last_active_at=last_act,
+                    expires_at=now + timedelta(days=30),
+                )
+                session.add(st_sess)
 
         # 4. Seed Course Chat and Initial Welcome Message
         stmt_chat = select(Chat).where(Chat.chat_id == OS_COURSE_UUID)

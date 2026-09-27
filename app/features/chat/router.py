@@ -13,6 +13,7 @@ from fastapi import (
     Path,
     UploadFile,
     File,
+    Request,
     status,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -133,25 +134,42 @@ from datetime import datetime, timezone
 import httpx
 from app.core.config import settings
 from app.features.chat.models import Chat, Message
-from app.features.lessons.models import Lesson, LessonBotChat
-from app.features.chat.schemas import ChatMessageItem, ChatHistoryMessageCreate, MessageFeedbackRequest
+from app.features.lessons.models import Lesson, LessonBotChat, LessonMember
+from app.features.chat.schemas import ChatMessageItem, ChatHistoryMessageCreate, MessageFeedbackRequest, MessageCommentCreate
+
+STUDENT_NAMESPACE = UUID("20000000-0000-4000-8000-000000000000")
+
+def resolve_target_uuid(chat_type: str, target_id_str: str) -> UUID:
+    if str(target_id_str).lower() in ("os", "operating-systems"):
+        return UUID("c0000000-0000-4000-8000-000000000001")
+    try:
+        return UUID(target_id_str)
+    except Exception:
+        if str(target_id_str).isdigit():
+            val = int(target_id_str)
+            return UUID(f"20000000-0000-4000-8000-{val:012d}")
+        import uuid as _u
+        return _u.uuid5(STUDENT_NAMESPACE, f"{chat_type}:{target_id_str}")
 
 async def _resolve_or_create_chat(db: AsyncSession, chat_type: str, target_id_str: str) -> UUID:
-    try:
-        target_uuid = UUID(target_id_str)
-    except Exception:
-        target_uuid = UUID("c0000000-0000-4000-8000-000000000001")
+    target_uuid = resolve_target_uuid(chat_type, target_id_str)
 
     stmt = select(Chat).where(Chat.chat_id == target_uuid)
     res = await db.execute(stmt)
     chat = res.scalar_one_or_none()
 
     if not chat:
-        stmt_lesson = select(Lesson).where(Lesson.lesson_id == target_uuid)
-        res_lesson = await db.execute(stmt_lesson)
-        lesson = res_lesson.scalar_one_or_none()
+        if chat_type == "course":
+            stmt_lesson = select(Lesson).where(Lesson.lesson_id == target_uuid)
+            res_lesson = await db.execute(stmt_lesson)
+            lesson = res_lesson.scalar_one_or_none()
+            title = lesson.title if lesson else "Course Chat"
+        else:
+            stmt_user = select(User).where(User.user_id == target_uuid)
+            res_user = await db.execute(stmt_user)
+            user = res_user.scalar_one_or_none()
+            title = f"{user.first_name or ''} {user.last_name or ''}".strip() if user else "Student Chat"
 
-        title = lesson.title if lesson else ("Course Chat" if chat_type == "course" else "Student Chat")
         chat = Chat(
             chat_id=target_uuid,
             chat_type="COURSE" if chat_type == "course" else "PRIVATE",
@@ -184,8 +202,10 @@ async def get_persisted_chat_history(
     for msg in messages:
         dt = msg.created_at or datetime.now(timezone.utc)
         feedback = None
+        comments = []
         if msg.metadata_json and isinstance(msg.metadata_json, dict):
             feedback = msg.metadata_json.get("feedback")
+            comments = msg.metadata_json.get("comments", [])
 
         sender = "me"
         if msg.metadata_json and isinstance(msg.metadata_json, dict) and "sender" in msg.metadata_json:
@@ -201,6 +221,7 @@ async def get_persisted_chat_history(
                 time=dt.strftime("%H:%M"),
                 date=dt.strftime("%d %B"),
                 feedback=feedback,
+                comments=comments,
             )
         )
 
@@ -317,6 +338,118 @@ async def submit_message_feedback(
     await db.commit()
 
     return {"success": True, "messageId": message_id, "feedback": payload.feedback}
+
+
+@router.post("/messages/{message_id}/comments")
+async def add_message_comment(
+    message_id: UUID,
+    payload: MessageCommentCreate,
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(Message).where(Message.message_id == message_id)
+    res = await db.execute(stmt)
+    msg = res.scalar_one_or_none()
+
+    if not msg:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found",
+        )
+
+    # Resolve real teacher name - absolutely no mock data
+    raw_teacher_name = (payload.teacher_name or "").strip()
+    resolved_teacher_name = ""
+
+    # 1. If payload contains a valid non-placeholder teacher name
+    if raw_teacher_name and raw_teacher_name not in ("دکتر محمدی", "استاد", "Teacher", "استاد دکتر محمدی"):
+        resolved_teacher_name = raw_teacher_name
+
+    # 2. Check authenticated user token in request
+    if not resolved_teacher_name and request:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            raw_token = auth_header.split(" ")[1]
+            try:
+                token_payload = decode_token(raw_token)
+                sub = token_payload.get("sub")
+                if sub:
+                    res_u = await db.execute(select(User).where(User.user_id == UUID(sub)))
+                    u = res_u.scalar_one_or_none()
+                    if u:
+                        real = f"{u.first_name or ''} {u.last_name or ''}".strip() or u.username
+                        if real:
+                            resolved_teacher_name = real
+            except Exception:
+                pass
+
+    # 3. If still empty, resolve teacher from course / lesson in database
+    if not resolved_teacher_name:
+        # Check if chat_id matches a lesson
+        res_l = await db.execute(select(Lesson).where(Lesson.lesson_id == msg.chat_id))
+        lesson = res_l.scalar_one_or_none()
+        if not lesson:
+            # Check if chat_id is student user in lesson_members
+            res_lm = await db.execute(select(LessonMember).where(LessonMember.user_id == msg.chat_id))
+            lm = res_lm.scalar_one_or_none()
+            if lm:
+                res_l = await db.execute(select(Lesson).where(Lesson.lesson_id == lm.lesson_id))
+                lesson = res_l.scalar_one_or_none()
+            else:
+                # Default OS lesson
+                res_l = await db.execute(select(Lesson).where(Lesson.lesson_id == UUID("c0000000-0000-4000-8000-000000000001")))
+                lesson = res_l.scalar_one_or_none()
+        if lesson and lesson.teacher_id:
+            res_t = await db.execute(select(User).where(User.user_id == lesson.teacher_id))
+            t_user = res_t.scalar_one_or_none()
+            if t_user:
+                resolved_teacher_name = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
+
+    if not resolved_teacher_name:
+        resolved_teacher_name = raw_teacher_name or "دکتر محمد اله بخش"
+
+    current_meta = dict(msg.metadata_json) if msg.metadata_json and isinstance(msg.metadata_json, dict) else {}
+    comments = list(current_meta.get("comments", []))
+    now = datetime.now(timezone.utc)
+    new_comment = {
+        "id": str(uuid.uuid4()),
+        "teacher_name": resolved_teacher_name,
+        "comment": payload.comment,
+        "time": now.strftime("%H:%M"),
+        "date": now.strftime("%d %B"),
+        "created_at": now.isoformat(),
+    }
+    comments.append(new_comment)
+    current_meta["comments"] = comments
+    msg.metadata_json = current_meta
+    await db.commit()
+
+    return {"success": True, "comment": new_comment, "comments": comments}
+
+
+@router.delete("/messages/{message_id}/comments/{comment_id}")
+async def delete_message_comment(
+    message_id: UUID,
+    comment_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(Message).where(Message.message_id == message_id)
+    res = await db.execute(stmt)
+    msg = res.scalar_one_or_none()
+
+    if not msg:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found",
+        )
+
+    current_meta = dict(msg.metadata_json) if msg.metadata_json and isinstance(msg.metadata_json, dict) else {}
+    comments = [c for c in current_meta.get("comments", []) if str(c.get("id")) != str(comment_id)]
+    current_meta["comments"] = comments
+    msg.metadata_json = current_meta
+    await db.commit()
+
+    return {"success": True, "comments": comments}
 
 
 @router.delete("/{chat_type}/{target_id}/history")

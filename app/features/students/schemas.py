@@ -11,6 +11,8 @@ class StudentResponse(BaseModel):
     status: str = "online"
     statusFa: str = "آنلاین"
     statusEn: str = "Online"
+    is_online: bool = False
+    last_active_at: Optional[str] = None
     date: str
     unreadCount: int = 0
     blocked: bool = False

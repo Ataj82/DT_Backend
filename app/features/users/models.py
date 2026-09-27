@@ -21,6 +21,15 @@ class User(Base):
         server_default=sa.text("gen_random_uuid()"),
     )
 
+    @property
+    def id(self):
+        return self.user_id
+
+    @id.setter
+    def id(self, val):
+        self.user_id = val
+
+
     username = Column(String, unique=True, nullable=False)
     hashed_password = Column(String, nullable=False)
 
