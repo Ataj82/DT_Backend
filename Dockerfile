@@ -10,17 +10,21 @@ ENV PYTHONUNBUFFERED=1
 
 RUN set -eux;     rm -f /etc/apt/sources.list;     rm -f /etc/apt/sources.list.d/debian.sources;     rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources || true;     . /etc/os-release;     echo "deb http://mirror-linux.runflare.com/debian ${VERSION_CODENAME} main contrib non-free non-free-firmware" > /etc/apt/sources.list;     echo "deb http://mirror-linux.runflare.com/debian ${VERSION_CODENAME}-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list;     echo "deb http://security.debian.org/debian-security ${VERSION_CODENAME}-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
 # ---------------------------------------------------
-# Set Runflare Mirror for pip
+# PyPI Index Configuration (Official PyPI + Aliyun Fallback)
 # ---------------------------------------------------
-ENV PIP_INDEX_URL=https://mirror-pypi.runflare.com/simple/
-ENV PIP_TRUSTED_HOST=mirror-pypi.runflare.com
-
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_EXTRA_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+ENV PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
+ENV PIP_DEFAULT_TIMEOUT=100
+ENV PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org mirrors.aliyun.com"
 
 # Copy only requirements first to cache the pip install step
 COPY requirements.txt .
 
-# Install dependencies using the mirror
-RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir -r requirements.txt
+# Install dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of your application code
 COPY . /app/
