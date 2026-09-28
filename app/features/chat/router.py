@@ -1,7 +1,10 @@
 import uuid
 import json
+import logging
 from typing import Optional, List, Annotated
 from uuid import UUID
+
+logger = logging.getLogger("chat.router")
 
 from fastapi import (
     APIRouter,
@@ -286,8 +289,18 @@ async def send_chat_message_with_rag(
                 "courseName": payload.courseName or "سیستم عامل",
                 "teacherName": "Teacher",
             }
+            logger.info(
+                ">>> [RAG/LLM REQUEST] Sending chat question to: %s | Query: \"%s\"",
+                settings.RAG_API_URL,
+                (payload.text[:100] + "...") if len(payload.text) > 100 else payload.text,
+            )
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(settings.RAG_API_URL, data=form_data)
+                logger.info(
+                    "<<< [RAG/LLM RESPONSE] Response from %s | Status: %s",
+                    settings.RAG_API_URL,
+                    resp.status_code,
+                )
                 if resp.status_code == 200:
                     data = resp.json()
                     ai_text = (
@@ -296,7 +309,19 @@ async def send_chat_message_with_rag(
                         or data.get("message")
                         or (data if isinstance(data, str) else "")
                     )
-        except Exception:
+                else:
+                    logger.warning(
+                        "!!! [RAG/LLM WARNING] Non-200 status %s from %s: %s",
+                        resp.status_code,
+                        settings.RAG_API_URL,
+                        resp.text[:300],
+                    )
+        except Exception as rag_err:
+            logger.error(
+                "!!! [RAG/LLM ERROR] Exception communicating with %s: %s",
+                settings.RAG_API_URL,
+                rag_err,
+            )
             ai_text = "مشکلی در ارتباط با سرور به وجود آمد."
 
     if not ai_text:

@@ -31,11 +31,32 @@ the supplied messages to the configured backend.
 from __future__ import annotations
 
 import json
+import logging
+import socket
+import time
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from ..configuration.llm_configuration import LLMConfiguration
+
+logger = logging.getLogger("llm_provider")
+
+
+def _resolve_target_info(url: str) -> tuple[str, str]:
+    """Returns (host_or_ip_with_port, resolved_ip)."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or "unknown"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            resolved_ip = socket.gethostbyname(host)
+        except Exception:
+            resolved_ip = host
+        return f"{host}:{port}", resolved_ip
+    except Exception:
+        return "unknown", "unknown"
 
 
 class LLMProviderError(RuntimeError):
@@ -166,6 +187,38 @@ class LLMProvider:
             + "/chat/completions"
         )
 
+        dest_host_port, dest_ip = _resolve_target_info(url)
+        roles_summary = ", ".join(f"{m.get('role', 'unknown')}:{len(str(m.get('content', '')))}c" for m in messages)
+        total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        last_user_content = next((str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"), "")
+        preview_text = " ".join(last_user_content[:120].split())
+        if len(last_user_content) > 120:
+            preview_text += "..."
+
+        logger.info(
+            "\n"
+            "====================================================================\n"
+            ">>> [LLM REQUEST OUTGOING]\n"
+            "  -> Destination IP : %s (Host: %s)\n"
+            "  -> Target URL     : %s\n"
+            "  -> Model Name     : %s\n"
+            "  -> Parameters     : temp=%s, max_tokens=%s, timeout=%ss\n"
+            "  -> Message Items  : %d msgs [%s] (Total %d chars)\n"
+            "  -> User Prompt    : \"%s\"\n"
+            "====================================================================",
+            dest_ip,
+            dest_host_port,
+            url,
+            configuration.model,
+            configuration.temperature,
+            configuration.max_tokens,
+            configuration.timeout_seconds,
+            len(messages),
+            roles_summary,
+            total_chars,
+            preview_text,
+        )
+
         payload = {
             "model": configuration.model,
             "messages": messages,
@@ -190,6 +243,7 @@ class LLMProvider:
             method="POST",
         )
 
+        start_time = time.perf_counter()
         try:
             with urlopen(
                 request,
@@ -200,30 +254,90 @@ class LLMProvider:
                 )
 
         except HTTPError as exc:
+            elapsed_sec = time.perf_counter() - start_time
             detail = exc.read().decode(
                 "utf-8",
                 errors="replace",
             )
-
+            logger.error(
+                "\n"
+                "====================================================================\n"
+                "!!! [LLM REQUEST FAILED - HTTP %s]\n"
+                "  !- Destination IP : %s (Host: %s)\n"
+                "  !- URL            : %s\n"
+                "  !- Duration       : %.2fs\n"
+                "  !- Error Detail   : %s\n"
+                "====================================================================",
+                exc.code,
+                dest_ip,
+                dest_host_port,
+                url,
+                elapsed_sec,
+                detail[:500],
+            )
             raise LLMProviderError(
                 f"LLM request failed with HTTP {exc.code}: "
                 f"{detail}"
             ) from exc
 
         except URLError as exc:
+            elapsed_sec = time.perf_counter() - start_time
+            logger.error(
+                "\n"
+                "====================================================================\n"
+                "!!! [LLM REQUEST FAILED - NETWORK ERROR]\n"
+                "  !- Destination IP : %s (Host: %s)\n"
+                "  !- URL            : %s\n"
+                "  !- Duration       : %.2fs\n"
+                "  !- Reason         : %s\n"
+                "====================================================================",
+                dest_ip,
+                dest_host_port,
+                url,
+                elapsed_sec,
+                exc.reason,
+            )
             raise LLMProviderError(
                 f"LLM request failed: {exc.reason}"
             ) from exc
 
         except TimeoutError as exc:
+            elapsed_sec = time.perf_counter() - start_time
+            logger.error(
+                "\n"
+                "====================================================================\n"
+                "!!! [LLM REQUEST FAILED - TIMEOUT]\n"
+                "  !- Destination IP : %s (Host: %s)\n"
+                "  !- URL            : %s\n"
+                "  !- Duration       : %.2fs (Limit: %ss)\n"
+                "====================================================================",
+                dest_ip,
+                dest_host_port,
+                url,
+                elapsed_sec,
+                configuration.timeout_seconds,
+            )
             raise LLMProviderError(
                 "LLM request timed out."
             ) from exc
 
         except json.JSONDecodeError as exc:
+            elapsed_sec = time.perf_counter() - start_time
+            logger.error(
+                "\n"
+                "====================================================================\n"
+                "!!! [LLM REQUEST FAILED - INVALID JSON]\n"
+                "  !- Destination IP : %s\n"
+                "  !- Duration       : %.2fs\n"
+                "====================================================================",
+                dest_ip,
+                elapsed_sec,
+            )
             raise LLMProviderError(
                 "LLM returned invalid JSON."
             ) from exc
+
+        elapsed_sec = time.perf_counter() - start_time
 
         try:
             content = (
@@ -237,28 +351,66 @@ class LLMProvider:
             IndexError,
             TypeError,
         ) as exc:
+            logger.error(
+                "\n"
+                "====================================================================\n"
+                "!!! [LLM RESPONSE MALFORMED]\n"
+                "  !- Destination IP : %s\n"
+                "  !- Duration       : %.2fs\n"
+                "  !- Missing choices[0].message.content\n"
+                "====================================================================",
+                dest_ip,
+                elapsed_sec,
+            )
             raise LLMProviderError(
                 "LLM response did not contain "
                 "choices[0].message.content."
             ) from exc
 
+        text_result = ""
         if isinstance(content, str):
-            return content
-
-        if isinstance(content, list):
+            text_result = content
+        elif isinstance(content, list):
             text_parts: list[str] = []
-
             for block in content:
                 if not isinstance(block, dict):
                     continue
-
                 text = block.get("text")
-
                 if isinstance(text, str):
                     text_parts.append(text)
+            text_result = "".join(text_parts)
+        else:
+            raise LLMProviderError(
+                "LLM response content has an unsupported format."
+            )
 
-            return "".join(text_parts)
+        usage = body.get("usage") if isinstance(body, dict) else {}
+        usage_info = ""
+        if isinstance(usage, dict) and usage:
+            usage_info = f"Tokens: prompt={usage.get('prompt_tokens', '?')}, completion={usage.get('completion_tokens', '?')}, total={usage.get('total_tokens', '?')}"
 
-        raise LLMProviderError(
-            "LLM response content has an unsupported format."
+        resp_preview = " ".join(str(text_result)[:120].split())
+        if len(str(text_result)) > 120:
+            resp_preview += "..."
+
+        logger.info(
+            "\n"
+            "====================================================================\n"
+            "<<< [LLM RESPONSE INCOMING - 200 OK]\n"
+            "  <- Source IP      : %s (Host: %s)\n"
+            "  <- Duration       : %.2fs\n"
+            "  <- Model          : %s\n"
+            "  <- %s\n"
+            "  <- Output Length  : %d chars\n"
+            "  <- Content Preview: \"%s\"\n"
+            "====================================================================",
+            dest_ip,
+            dest_host_port,
+            elapsed_sec,
+            configuration.model,
+            usage_info or "Tokens: N/A",
+            len(text_result),
+            resp_preview,
         )
+
+        return text_result
