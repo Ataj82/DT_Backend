@@ -7,6 +7,7 @@ Controller for managing oral/adaptive exam requests directly from frontend input
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 from datetime import datetime
@@ -175,7 +176,7 @@ async def generate_goals_from_file(
         raise HTTPException(status_code=400, detail="فایل ارسالی خالی است.")
 
     from ...knowledge.file_extractor import extract_text_from_file_bytes, optimize_content_for_llm
-    raw_text = extract_text_from_file_bytes(file.filename, content_bytes, max_chars=40000)
+    raw_text = await asyncio.to_thread(extract_text_from_file_bytes, file.filename, content_bytes, 40000)
 
     if not raw_text or len(raw_text.strip()) < 10:
         raise HTTPException(
@@ -185,7 +186,7 @@ async def generate_goals_from_file(
 
     # Intelligently condense text to strictly <= 2000 chars (approx. 1000 - 1500 tokens)
     # This prevents HTTP 400 Context Length Exceeded errors on 4096-token LLM models
-    optimized_text = optimize_content_for_llm(raw_text, filename=file.filename, max_chars=2000)
+    optimized_text = await asyncio.to_thread(optimize_content_for_llm, raw_text, file.filename, 2000)
 
     goals = []
     # 1. Attempt LLM generation
@@ -219,20 +220,32 @@ async def generate_goals_from_file(
 
         def _parse_llm_json(raw_resp: str):
             cleaned = raw_resp.strip()
-            if "```" in cleaned:
-                m = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", cleaned, re.DOTALL)
-                if m:
-                    cleaned = m.group(1)
+            # 1. Try markdown code block
+            m = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", cleaned, re.DOTALL)
+            if m:
+                cleaned = m.group(1).strip()
+            else:
+                # 2. Extract slice between first [ and last ]
+                s_idx = cleaned.find("[")
+                e_idx = cleaned.rfind("]")
+                if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+                    cleaned = cleaned[s_idx:e_idx + 1]
                 else:
                     cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
                     cleaned = re.sub(r"\n?```$", "", cleaned).strip()
-            return json.loads(cleaned)
+            parsed_data = json.loads(cleaned)
+            if isinstance(parsed_data, dict) and "goals" in parsed_data:
+                return parsed_data["goals"]
+            return parsed_data
 
         try:
-            llm_response = llm.chat([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ])
+            llm_response = await asyncio.to_thread(
+                llm.chat,
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
+                ]
+            )
             parsed = _parse_llm_json(llm_response)
         except Exception as chat_err:
             err_str = str(chat_err)
@@ -243,10 +256,13 @@ async def generate_goals_from_file(
                     f"درس: {course_title or 'سیستم عامل'}\n"
                     f"مباحث کلیدی:\n\n{ultra_compact}"
                 )
-                llm_response = llm.chat([
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content_retry}
-                ])
+                llm_response = await asyncio.to_thread(
+                    llm.chat,
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content_retry}
+                    ]
+                )
                 parsed = _parse_llm_json(llm_response)
             else:
                 raise chat_err
