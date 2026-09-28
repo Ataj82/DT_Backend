@@ -8,13 +8,13 @@ http:
         - web
       priority: 100
 
-    # 2. Frontend fallback route
+    # 2. Frontend fallback route (dev server fallback)
     frontend-host-router:
       rule: "PathPrefix(`/`)"
       service: frontend-host-service
       entryPoints:
         - web
-      priority: 10
+      priority: 5
 
   services:
     legacy-llm-service:
