@@ -4,7 +4,7 @@ import copy
 import hashlib
 import json
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from threading import RLock
 from uuid import uuid4
@@ -225,7 +225,6 @@ class MultiUserService:
         if e_at and e_at.tzinfo is None:
             e_at = e_at.replace(tzinfo=timezone.utc)
 
-        from datetime import timedelta
         if s_at and now < s_at - timedelta(minutes=2):
             raise ValueError("زمان شروع این آزمون هنوز فرا نرسیده است.")
         if e_at and now > e_at:
