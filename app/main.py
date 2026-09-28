@@ -175,8 +175,20 @@ def read_root():
 app.include_router(api_router, prefix="/api/v1")
 
 from uuid import UUID
-from app.features.chat.router import submit_message_feedback, add_message_comment, delete_message_comment
-from app.features.chat.schemas import MessageFeedbackRequest, MessageCommentCreate
+from app.features.chat.router import (
+    submit_message_feedback,
+    add_message_comment,
+    delete_message_comment,
+    mark_message_comment_read,
+    bulk_mark_comments_read,
+    get_student_unread_comments_summary,
+)
+from app.features.chat.schemas import (
+    MessageFeedbackRequest,
+    MessageCommentCreate,
+    MarkCommentReadRequest,
+    BulkMarkCommentReadRequest,
+)
 
 @app.post("/api/v1/messages/{message_id}/feedback", tags=["Chats"])
 async def message_feedback_alias(
@@ -202,3 +214,30 @@ async def message_comment_delete_alias(
     db: AsyncSession = Depends(get_db),
 ):
     return await delete_message_comment(message_id, comment_id, db)
+
+@app.post("/api/v1/messages/{message_id}/comments/{comment_id}/read", tags=["Chats"])
+async def message_comment_read_alias(
+    message_id: UUID,
+    comment_id: str,
+    payload: Optional[MarkCommentReadRequest] = None,
+    student_id: Optional[str] = None,
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+):
+    return await mark_message_comment_read(message_id, comment_id, payload, student_id, request, db)
+
+@app.post("/api/v1/messages/comments/mark-read", tags=["Chats"])
+async def message_comment_bulk_read_alias(
+    payload: BulkMarkCommentReadRequest,
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+):
+    return await bulk_mark_comments_read(payload, request, db)
+
+@app.get("/api/v1/students/{student_id}/unread-comments-summary", tags=["Chats"])
+async def student_unread_comments_summary_alias(
+    student_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    return await get_student_unread_comments_summary(student_id, db)
+

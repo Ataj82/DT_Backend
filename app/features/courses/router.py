@@ -96,6 +96,33 @@ async def get_all_courses(
             for msg in res_msg.scalars().all():
                 latest_messages[msg.chat_id] = msg
 
+    # Calculate unread comments count for student
+    unread_counts: Dict[UUID, int] = {}
+    if lessons:
+        check_chat_ids = [l.lesson_id for l in lessons]
+        if current_student_id:
+            check_chat_ids.append(current_student_id)
+
+        stmt_unr = select(Message).where(
+            Message.chat_id.in_(check_chat_ids),
+            Message.metadata_json.isnot(None),
+        )
+        res_unr = await db.execute(stmt_unr)
+        all_unr_msgs = res_unr.scalars().all()
+        for u_msg in all_unr_msgs:
+            if not u_msg.metadata_json or not isinstance(u_msg.metadata_json, dict):
+                continue
+            u_comments = u_msg.metadata_json.get("comments", [])
+            for uc in u_comments:
+                if not isinstance(uc, dict):
+                    continue
+                uc_read = uc.get("is_read", False)
+                read_by = [str(x) for x in uc.get("read_by", [])]
+                is_unread = not uc_read or (current_student_id and str(current_student_id) not in read_by)
+                if is_unread:
+                    target_l_id = u_msg.chat_id if u_msg.chat_id in [l.lesson_id for l in lessons] else OS_COURSE_UUID
+                    unread_counts[target_l_id] = unread_counts.get(target_l_id, 0) + 1
+
     # Resolve real teacher names from users table
     teachers_map: Dict[UUID, str] = {}
     teacher_ids = [l.teacher_id for l in lessons if l.teacher_id]
@@ -135,7 +162,7 @@ async def get_all_courses(
                 accessLevel="public" if l.is_public else "private",
                 photo_url=l.avatar_url,
                 date=dt_str,
-                unreadCount=0,
+                unreadCount=unread_counts.get(l.lesson_id, 0),
                 teacher_name=t_name,
                 instructor_name=t_name,
                 isActive=l.is_active if l.is_active is not None else True,

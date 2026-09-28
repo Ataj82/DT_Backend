@@ -130,12 +130,20 @@ async def require_chat_owner(
 # ============================================================
 
 from sqlalchemy import select, delete
+from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone
 import httpx
 from app.core.config import settings
 from app.features.chat.models import Chat, Message
 from app.features.lessons.models import Lesson, LessonBotChat, LessonMember
-from app.features.chat.schemas import ChatMessageItem, ChatHistoryMessageCreate, MessageFeedbackRequest, MessageCommentCreate
+from app.features.chat.schemas import (
+    ChatMessageItem,
+    ChatHistoryMessageCreate,
+    MessageFeedbackRequest,
+    MessageCommentCreate,
+    MarkCommentReadRequest,
+    BulkMarkCommentReadRequest,
+)
 
 STUDENT_NAMESPACE = UUID("20000000-0000-4000-8000-000000000000")
 
@@ -205,7 +213,15 @@ async def get_persisted_chat_history(
         comments = []
         if msg.metadata_json and isinstance(msg.metadata_json, dict):
             feedback = msg.metadata_json.get("feedback")
-            comments = msg.metadata_json.get("comments", [])
+            raw_comments = msg.metadata_json.get("comments", [])
+            for c in raw_comments:
+                if isinstance(c, dict):
+                    c_dict = dict(c)
+                    c_dict.setdefault("is_read", False)
+                    c_dict.setdefault("read_by", [])
+                    c_dict.setdefault("read_at", None)
+                    c_dict.setdefault("message_id", str(msg.message_id))
+                    comments.append(c_dict)
 
         sender = "me"
         if msg.metadata_json and isinstance(msg.metadata_json, dict) and "sender" in msg.metadata_json:
@@ -366,6 +382,7 @@ async def add_message_comment(
         resolved_teacher_name = raw_teacher_name
 
     # 2. Check authenticated user token in request
+    teacher_id_val = None
     if not resolved_teacher_name and request:
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
@@ -374,6 +391,7 @@ async def add_message_comment(
                 token_payload = decode_token(raw_token)
                 sub = token_payload.get("sub")
                 if sub:
+                    teacher_id_val = str(sub)
                     res_u = await db.execute(select(User).where(User.user_id == UUID(sub)))
                     u = res_u.scalar_one_or_none()
                     if u:
@@ -400,6 +418,7 @@ async def add_message_comment(
                 res_l = await db.execute(select(Lesson).where(Lesson.lesson_id == UUID("c0000000-0000-4000-8000-000000000001")))
                 lesson = res_l.scalar_one_or_none()
         if lesson and lesson.teacher_id:
+            teacher_id_val = str(lesson.teacher_id)
             res_t = await db.execute(select(User).where(User.user_id == lesson.teacher_id))
             t_user = res_t.scalar_one_or_none()
             if t_user:
@@ -414,14 +433,20 @@ async def add_message_comment(
     new_comment = {
         "id": str(uuid.uuid4()),
         "teacher_name": resolved_teacher_name,
+        "teacher_id": teacher_id_val,
         "comment": payload.comment,
         "time": now.strftime("%H:%M"),
         "date": now.strftime("%d %B"),
         "created_at": now.isoformat(),
+        "is_read": False,
+        "read_by": [],
+        "read_at": None,
+        "message_id": str(message_id),
     }
     comments.append(new_comment)
     current_meta["comments"] = comments
     msg.metadata_json = current_meta
+    flag_modified(msg, "metadata_json")
     await db.commit()
 
     return {"success": True, "comment": new_comment, "comments": comments}
@@ -447,9 +472,184 @@ async def delete_message_comment(
     comments = [c for c in current_meta.get("comments", []) if str(c.get("id")) != str(comment_id)]
     current_meta["comments"] = comments
     msg.metadata_json = current_meta
+    flag_modified(msg, "metadata_json")
     await db.commit()
 
     return {"success": True, "comments": comments}
+
+
+@router.post("/messages/{message_id}/comments/{comment_id}/read")
+async def mark_message_comment_read(
+    message_id: UUID,
+    comment_id: str,
+    payload: Optional[MarkCommentReadRequest] = None,
+    student_id: Optional[str] = Query(None),
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(Message).where(Message.message_id == message_id)
+    res = await db.execute(stmt)
+    msg = res.scalar_one_or_none()
+
+    if not msg:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found",
+        )
+
+    reader_id = (payload.student_id if payload else None) or student_id
+    if not reader_id and request:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            raw_token = auth_header.split(" ")[1]
+            try:
+                token_payload = decode_token(raw_token)
+                reader_id = token_payload.get("sub")
+            except Exception:
+                pass
+
+    current_meta = dict(msg.metadata_json) if msg.metadata_json and isinstance(msg.metadata_json, dict) else {}
+    comments = list(current_meta.get("comments", []))
+    now = datetime.now(timezone.utc)
+    updated_comment = None
+
+    for c in comments:
+        if str(c.get("id")) == str(comment_id):
+            c["is_read"] = True
+            c["read_at"] = now.isoformat()
+            read_by = list(c.get("read_by", []))
+            if reader_id and str(reader_id) not in [str(x) for x in read_by]:
+                read_by.append(str(reader_id))
+            c["read_by"] = read_by
+            updated_comment = c
+            break
+
+    current_meta["comments"] = comments
+    msg.metadata_json = current_meta
+    flag_modified(msg, "metadata_json")
+    await db.commit()
+
+    return {"success": True, "comment": updated_comment, "comments": comments}
+
+
+@router.post("/messages/comments/mark-read")
+async def bulk_mark_comments_read(
+    payload: BulkMarkCommentReadRequest,
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+):
+    reader_id = payload.student_id
+    if not reader_id and request:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            raw_token = auth_header.split(" ")[1]
+            try:
+                token_payload = decode_token(raw_token)
+                reader_id = token_payload.get("sub")
+            except Exception:
+                pass
+
+    now = datetime.now(timezone.utc)
+    comment_id_set = set(str(cid) for cid in (payload.comment_ids or []))
+
+    if payload.target_id and payload.chat_type:
+        target_uuid = resolve_target_uuid(payload.chat_type, payload.target_id)
+        stmt = select(Message).where(Message.chat_id == target_uuid)
+    else:
+        stmt = select(Message).where(Message.metadata_json.isnot(None))
+
+    res = await db.execute(stmt)
+    messages = res.scalars().all()
+    marked_count = 0
+
+    for msg in messages:
+        if not msg.metadata_json or not isinstance(msg.metadata_json, dict):
+            continue
+        comments = list(msg.metadata_json.get("comments", []))
+        modified = False
+        for c in comments:
+            cid = str(c.get("id"))
+            if not comment_id_set or cid in comment_id_set:
+                c["is_read"] = True
+                c["read_at"] = now.isoformat()
+                read_by = list(c.get("read_by", []))
+                if reader_id and str(reader_id) not in [str(x) for x in read_by]:
+                    read_by.append(str(reader_id))
+                c["read_by"] = read_by
+                modified = True
+                marked_count += 1
+        if modified:
+            current_meta = dict(msg.metadata_json)
+            current_meta["comments"] = comments
+            msg.metadata_json = current_meta
+            flag_modified(msg, "metadata_json")
+
+    await db.commit()
+    return {"success": True, "marked_count": marked_count}
+
+
+@router.get("/students/{student_id}/unread-comments-summary")
+async def get_student_unread_comments_summary(
+    student_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    student_uuid = resolve_target_uuid("student", student_id)
+    course_stmt = select(Chat.chat_id).where(Chat.chat_type == "COURSE")
+    course_res = await db.execute(course_stmt)
+    course_ids = list(course_res.scalars().all())
+    allowed_chat_ids = [student_uuid] + course_ids
+
+    stmt = (
+        select(Message)
+        .where(
+            Message.chat_id.in_(allowed_chat_ids),
+            Message.metadata_json.isnot(None),
+        )
+        .order_by(Message.created_at.desc())
+    )
+    res = await db.execute(stmt)
+    messages = res.scalars().all()
+
+    unread_comments = []
+    seen_comment_ids = set()
+
+    for msg in messages:
+        if not msg.metadata_json or not isinstance(msg.metadata_json, dict):
+            continue
+        comments = msg.metadata_json.get("comments", [])
+        for c in comments:
+            if not isinstance(c, dict):
+                continue
+            cid = str(c.get("id"))
+            if cid in seen_comment_ids:
+                continue
+            read_by = [str(x) for x in c.get("read_by", [])]
+            is_read = bool(c.get("is_read", False))
+            if msg.chat_id == student_uuid:
+                is_already_read = is_read or (student_id and str(student_id) in read_by)
+            else:
+                is_already_read = (student_id and str(student_id) in read_by) or is_read
+            if not is_already_read:
+                seen_comment_ids.add(cid)
+                unread_comments.append({
+                    "comment_id": cid,
+                    "id": cid,
+                    "message_id": str(msg.message_id),
+                    "teacher_name": c.get("teacher_name", "استاد"),
+                    "comment": c.get("comment", ""),
+                    "created_at": c.get("created_at"),
+                    "time": c.get("time"),
+                    "date": c.get("date"),
+                    "chat_id": str(msg.chat_id),
+                })
+
+    return {
+        "success": True,
+        "unread_count": len(unread_comments),
+        "unread_comments": unread_comments,
+    }
+
+
 
 
 @router.delete("/{chat_type}/{target_id}/history")

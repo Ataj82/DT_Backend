@@ -36,6 +36,17 @@ class MessageCommentCreate(BaseModel):
     teacher_name: str
     comment: str
 
+
+class MarkCommentReadRequest(BaseModel):
+    student_id: Optional[str] = None
+
+
+class BulkMarkCommentReadRequest(BaseModel):
+    comment_ids: Optional[List[str]] = None
+    chat_type: Optional[str] = None
+    target_id: Optional[str] = None
+    student_id: Optional[str] = None
+
 # ============================================================
 # Chat
 # ============================================================
