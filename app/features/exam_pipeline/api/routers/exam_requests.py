@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 
 from ...api.dependencies import get_framework, get_goal_service, get_interview_service
 from ...api.dependencies_multiuser import get_current_user, get_multiuser_service, require_professor, require_student
@@ -156,6 +156,205 @@ def _to_goal_response(goal) -> GoalResponse:
         ],
         status=goal.status,
     )
+
+
+@router.post("/goals/generate-from-file")
+async def generate_goals_from_file(
+    file: UploadFile = File(...),
+    course_title: Optional[str] = Form(None),
+    exam_title: Optional[str] = Form(None),
+    max_goals: int = Form(5),
+    framework=Depends(get_framework),
+):
+    """
+    Extracts text from an uploaded course document (PDF, DOCX, TXT, PPTX) and generates
+    structured oral assessment goals (Bloom level, type, description) via LLM or fallback pipeline.
+    """
+    content_bytes = await file.read()
+    if not content_bytes:
+        raise HTTPException(status_code=400, detail="فایل ارسالی خالی است.")
+
+    from ...knowledge.file_extractor import extract_text_from_file_bytes, optimize_content_for_llm
+    raw_text = extract_text_from_file_bytes(file.filename, content_bytes, max_chars=40000)
+
+    if not raw_text or len(raw_text.strip()) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="امکان استخراج متن از این فایل وجود ندارد یا فایل فاقد محتوای متنی است."
+        )
+
+    # Intelligently condense text to strictly <= 2000 chars (approx. 1000 - 1500 tokens)
+    # This prevents HTTP 400 Context Length Exceeded errors on 4096-token LLM models
+    optimized_text = optimize_content_for_llm(raw_text, filename=file.filename, max_chars=2000)
+
+    goals = []
+    # 1. Attempt LLM generation
+    try:
+        from ...llm.provider import LLMProvider
+        from ...configuration.llm_configuration import LLMConfiguration
+        import json
+        import re
+
+        llm = LLMProvider(configuration=LLMConfiguration.from_env())
+
+        system_prompt = (
+            "You are an expert university professor and oral examination designer.\n"
+            "Analyze the following educational text/syllabus and extract the most important assessment goals (سرفصل‌ها و اهداف ارزیابی آزمون شفاهی).\n"
+            f"Generate between 2 to {max_goals} distinct, high-quality goals in PERSIAN.\n"
+            "Each goal must have:\n"
+            "- title: Short, clear topic title in Persian (e.g., 'مفاهیم زمان‌بندی پردازنده و الگوریتم‌های آن')\n"
+            "- description: Concise explanation of what is evaluated (in Persian)\n"
+            "- goal_type: exactly one of ['theoretical', 'practical', 'analytical']\n"
+            "- bloom_level: integer from 1 to 6 (1: یادآوری, 2: درک مفاهیم, 3: به‌کارگیری, 4: تحلیل, 5: ارزیابی, 6: آفرینش)\n\n"
+            "Return ONLY a valid JSON array of objects. Do not include markdown code block backticks if possible, or wrap cleanly in ```json ... ```. No extra commentary."
+        )
+
+        user_content = (
+            f"درس: {course_title or 'سیستم عامل'}\n"
+            f"عنوان آزمون: {exam_title or 'آزمون شفاهی'}\n"
+            f"تعداد اهداف مورد نیاز: {max_goals}\n\n"
+            f"خلاصه و سرفصل‌های کلیدی استخراج‌شده از سند «{file.filename}»:\n\n"
+            f"{optimized_text}"
+        )
+
+        def _parse_llm_json(raw_resp: str):
+            cleaned = raw_resp.strip()
+            if "```" in cleaned:
+                m = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", cleaned, re.DOTALL)
+                if m:
+                    cleaned = m.group(1)
+                else:
+                    cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
+                    cleaned = re.sub(r"\n?```$", "", cleaned).strip()
+            return json.loads(cleaned)
+
+        try:
+            llm_response = llm.chat([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ])
+            parsed = _parse_llm_json(llm_response)
+        except Exception as chat_err:
+            err_str = str(chat_err)
+            if "400" in err_str and ("context length" in err_str.lower() or "reduce the length" in err_str.lower() or "input tokens" in err_str.lower()):
+                logging.getLogger(__name__).warning("Context length limit encountered (%s). Retrying with ultra-compact 800-char text...", chat_err)
+                ultra_compact = optimized_text[:800].rsplit("\n", 1)[0]
+                user_content_retry = (
+                    f"درس: {course_title or 'سیستم عامل'}\n"
+                    f"مباحث کلیدی:\n\n{ultra_compact}"
+                )
+                llm_response = llm.chat([
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content_retry}
+                ])
+                parsed = _parse_llm_json(llm_response)
+            else:
+                raise chat_err
+
+        if isinstance(parsed, list):
+            valid_types = {"theoretical", "practical", "analytical"}
+            type_mapping = {
+                "knowledge": "theoretical",
+                "understanding": "theoretical",
+                "concept": "theoretical",
+                "theory": "theoretical",
+                "تئوری": "theoretical",
+                "مفهومی": "theoretical",
+                "application": "practical",
+                "practical": "practical",
+                "کاربردی": "practical",
+                "عملی": "practical",
+                "analysis": "analytical",
+                "analytical": "analytical",
+                "evaluation": "analytical",
+                "تحلیلی": "analytical",
+            }
+            bloom_text_map = {
+                "1": 1, "remember": 1, "یادآوری": 1, "حفظ": 1,
+                "2": 2, "understand": 2, "comprehension": 2, "درک": 2, "درک مفاهیم": 2, "مفهومی": 2, "فهم": 2,
+                "3": 3, "apply": 3, "application": 3, "به‌کارگیری": 3, "بکارگیری": 3, "کاربرد": 3, "عملی": 3,
+                "4": 4, "analyze": 4, "analysis": 4, "تحلیل": 4, "تحلیلی": 4, "تحليلي": 4,
+                "5": 5, "evaluate": 5, "evaluation": 5, "ارزیابی": 5, "تقييم": 5, "تقييمي": 5, "داوری": 5,
+                "6": 6, "create": 6, "creation": 6, "synthesis": 6, "آفرینش": 6, "خلق": 6, "طراحی": 6,
+            }
+
+            for item in parsed[:max_goals]:
+                if isinstance(item, dict):
+                    t = item.get("title", "").strip()
+                    if not t:
+                        continue
+                    gt_raw = str(item.get("goal_type", "theoretical")).lower().strip()
+                    gt = type_mapping.get(gt_raw, "theoretical" if gt_raw not in valid_types else gt_raw)
+
+                    raw_bl = str(item.get("bloom_level", 2)).strip().lower()
+                    bl = bloom_text_map.get(raw_bl, 2)
+                    if raw_bl.isdigit():
+                        bl = max(1, min(6, int(raw_bl)))
+
+                    goals.append({
+                        "title": t,
+                        "description": item.get("description", f"ارزیابی {t}"),
+                        "goal_type": gt,
+                        "bloom_level": bl,
+                    })
+    except Exception as exc:
+        logging.getLogger(__name__).warning("LLM goal extraction failed: %s. Using KnowledgeProcessor fallback.", exc)
+
+    # 2. Fallback to KnowledgeProcessor + GoalGenerator if LLM returned no goals
+    if not goals:
+        try:
+            from ...knowledge.models import KnowledgeBase, Document
+            from ...knowledge.processor import KnowledgeProcessor
+            from ...goals.generator import GoalGenerator
+
+            temp_kb = KnowledgeBase(id="temp_extract", title=file.filename)
+            temp_kb.documents.append(Document(id="doc_1", filename=file.filename, content=optimized_text))
+            graph = KnowledgeProcessor().process(temp_kb)
+            goal_model = GoalGenerator().generate(graph=graph, max_goals=max_goals)
+
+            for g in goal_model.goals:
+                bloom_int = getattr(g.bloom_level, "value", 2) if hasattr(g.bloom_level, "value") else 2
+                if isinstance(bloom_int, str):
+                    bloom_map = {"remember": 1, "understand": 2, "apply": 3, "analyze": 4, "evaluate": 5, "create": 6}
+                    bloom_int = bloom_map.get(bloom_int.lower(), 2)
+                goals.append({
+                    "title": g.title,
+                    "description": g.description or f"ارزیابی {g.title}",
+                    "goal_type": "theoretical",
+                    "bloom_level": int(bloom_int),
+                })
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Fallback goal generation failed: %s", exc)
+
+    if not goals:
+        # Extract meaningful topics from headings in optimized_text if available
+        candidate_lines = [
+            re.sub(r"^[\d۰-۹\-•*.)]+\s*", "", l).strip()
+            for l in optimized_text.splitlines()
+            if 5 < len(l.strip()) < 80 and not any(bad in l for bad in ["<<", ">>", "obj", "stream"])
+        ]
+        if candidate_lines:
+            for top_title in candidate_lines[:max_goals]:
+                goals.append({
+                    "title": top_title,
+                    "description": f"ارزیابی و سنجش تسلط دانشجو بر مبحث {top_title}",
+                    "goal_type": "theoretical",
+                    "bloom_level": 2,
+                })
+        else:
+            base_name = file.filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ")
+            goals = [
+                {"title": f"مفاهیم پایه {base_name}", "description": f"آشنایی و درک مفاهیم کلیدی {base_name}", "goal_type": "theoretical", "bloom_level": 2},
+                {"title": f"تحلیل و کاربرد {base_name}", "description": f"به‌کارگیری و تحلیل مسائل مربوط به {base_name}", "goal_type": "practical", "bloom_level": 3},
+            ]
+
+    return {
+        "status": "success",
+        "source_file": file.filename,
+        "text_length": len(raw_text),
+        "optimized_length": len(optimized_text),
+        "goals": goals,
+    }
 
 
 @router.post("/create", response_model=ExamResponse, status_code=status.HTTP_201_CREATED)
