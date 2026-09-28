@@ -6,6 +6,8 @@ http:
       service: legacy-llm-service
       entryPoints:
         - web
+        - websecure
+      tls: {}
       priority: 100
 
     # 2. Frontend fallback route (dev server fallback)
@@ -14,6 +16,8 @@ http:
       service: frontend-host-service
       entryPoints:
         - web
+        - websecure
+      tls: {}
       priority: 5
 
   services:
@@ -28,3 +32,8 @@ http:
         servers:
           - url: "http://host.docker.internal:5173"
         passHostHeader: true
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/cert.pem
+      keyFile: /etc/traefik/certs/key.pem

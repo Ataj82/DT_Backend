@@ -1,0 +1,2 @@
+# Place SSL/TLS certificates here (cert.pem and key.pem)
+# If provided, Traefik will automatically use them for digitaltwin.um.ac.ir
