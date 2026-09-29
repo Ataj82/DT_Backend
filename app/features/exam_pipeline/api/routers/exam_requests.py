@@ -198,10 +198,11 @@ async def generate_goals_from_file(
 
         llm = LLMProvider(configuration=LLMConfiguration.from_env())
 
+        target_max_goals = max(1, int(max_goals or 1))
         system_prompt = (
             "You are an expert university professor and oral examination designer.\n"
             "Analyze the following educational text/syllabus and extract the most important assessment goals (سرفصل‌ها و اهداف ارزیابی آزمون شفاهی).\n"
-            f"Generate between 2 to {max_goals} distinct, high-quality goals in PERSIAN.\n"
+            f"Generate up to {target_max_goals} distinct, high-quality goals in PERSIAN (generate exactly {target_max_goals} if possible, or fewer if the document content is limited).\n"
             "Each goal must have:\n"
             "- title: Short, clear topic title in Persian (e.g., 'مفاهیم زمان‌بندی پردازنده و الگوریتم‌های آن')\n"
             "- description: Concise explanation of what is evaluated (in Persian)\n"
@@ -213,7 +214,7 @@ async def generate_goals_from_file(
         user_content = (
             f"درس: {course_title or 'سیستم عامل'}\n"
             f"عنوان آزمون: {exam_title or 'آزمون شفاهی'}\n"
-            f"تعداد اهداف مورد نیاز: {max_goals}\n\n"
+            f"تعداد اهداف مورد نیاز: حداکثر {target_max_goals} هدف (در صورت وجود محتوای کافی، دقیقاً {target_max_goals} هدف تولید کنید)\n\n"
             f"خلاصه و سرفصل‌های کلیدی استخراج‌شده از سند «{file.filename}»:\n\n"
             f"{optimized_text}"
         )
@@ -363,6 +364,9 @@ async def generate_goals_from_file(
                 {"title": f"مفاهیم پایه {base_name}", "description": f"آشنایی و درک مفاهیم کلیدی {base_name}", "goal_type": "theoretical", "bloom_level": 2},
                 {"title": f"تحلیل و کاربرد {base_name}", "description": f"به‌کارگیری و تحلیل مسائل مربوط به {base_name}", "goal_type": "practical", "bloom_level": 3},
             ]
+
+    target_max_goals = max(1, int(max_goals or 1))
+    goals = goals[:target_max_goals]
 
     return {
         "status": "success",
