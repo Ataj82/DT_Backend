@@ -690,6 +690,10 @@ async def get_student_unread_comments_summary(
     request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
+    if not isinstance(request, Request):
+        if isinstance(request, AsyncSession):
+            db = request
+        request = None
     student_uuid = resolve_target_uuid("student", student_id)
     tz = get_request_timezone(request)
     course_stmt = select(Chat.chat_id).where(Chat.chat_type == "COURSE")

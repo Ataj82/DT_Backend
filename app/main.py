@@ -237,7 +237,9 @@ async def message_comment_bulk_read_alias(
 @app.get("/api/v1/students/{student_id}/unread-comments-summary", tags=["Chats"])
 async def student_unread_comments_summary_alias(
     student_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    return await get_student_unread_comments_summary(student_id, db)
+    return await get_student_unread_comments_summary(student_id, request=request, db=db)
+
 
