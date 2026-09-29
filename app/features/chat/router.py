@@ -135,6 +135,7 @@ async def require_chat_owner(
 from sqlalchemy import select, delete
 from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import httpx
 from app.core.config import settings
 from app.features.chat.models import Chat, Message
@@ -147,6 +148,18 @@ from app.features.chat.schemas import (
     MarkCommentReadRequest,
     BulkMarkCommentReadRequest,
 )
+
+TEHRAN_TZ = ZoneInfo("Asia/Tehran")
+
+def get_request_timezone(request: Optional[Request] = None) -> ZoneInfo:
+    if request:
+        tz_hdr = request.headers.get("x-timezone")
+        if tz_hdr:
+            try:
+                return ZoneInfo(tz_hdr)
+            except Exception:
+                pass
+    return TEHRAN_TZ
 
 STUDENT_NAMESPACE = UUID("20000000-0000-4000-8000-000000000000")
 
@@ -197,9 +210,11 @@ async def _resolve_or_create_chat(db: AsyncSession, chat_type: str, target_id_st
 async def get_persisted_chat_history(
     chat_type: str,
     target_id: str,
+    request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
     chat_id = await _resolve_or_create_chat(db, chat_type, target_id)
+    tz = get_request_timezone(request)
 
     stmt = (
         select(Message)
@@ -212,6 +227,10 @@ async def get_persisted_chat_history(
     formatted_messages = []
     for msg in messages:
         dt = msg.created_at or datetime.now(timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local_dt = dt.astimezone(tz)
+
         feedback = None
         comments = []
         if msg.metadata_json and isinstance(msg.metadata_json, dict):
@@ -224,6 +243,23 @@ async def get_persisted_chat_history(
                     c_dict.setdefault("read_by", [])
                     c_dict.setdefault("read_at", None)
                     c_dict.setdefault("message_id", str(msg.message_id))
+
+                    # Localize comment time and date
+                    c_created_str = c_dict.get("created_at")
+                    c_dt = None
+                    if c_created_str:
+                        try:
+                            c_dt = datetime.fromisoformat(c_created_str)
+                        except Exception:
+                            c_dt = None
+                    if not c_dt:
+                        c_dt = dt
+                    if c_dt.tzinfo is None:
+                        c_dt = c_dt.replace(tzinfo=timezone.utc)
+                    c_local_dt = c_dt.astimezone(tz)
+                    c_dict["time"] = c_local_dt.strftime("%H:%M")
+                    c_dict["date"] = c_local_dt.strftime("%d %B")
+                    c_dict["created_at"] = c_dt.isoformat()
                     comments.append(c_dict)
 
         sender = "me"
@@ -237,8 +273,9 @@ async def get_persisted_chat_history(
                 id=msg.message_id,
                 text=msg.text_content or "",
                 sender=sender,
-                time=dt.strftime("%H:%M"),
-                date=dt.strftime("%d %B"),
+                time=local_dt.strftime("%H:%M"),
+                date=local_dt.strftime("%d %B"),
+                created_at=dt.isoformat(),
                 feedback=feedback,
                 comments=comments,
             )
@@ -252,10 +289,39 @@ async def send_chat_message_with_rag(
     chat_type: str,
     target_id: str,
     payload: ChatHistoryMessageCreate,
+    request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
+    target_uuid = resolve_target_uuid(chat_type, target_id)
+    if chat_type == "course":
+        stmt_l = select(Lesson).where(Lesson.lesson_id == target_uuid)
+        res_l = await db.execute(stmt_l)
+        lesson_obj = res_l.scalar_one_or_none()
+        if lesson_obj and lesson_obj.is_active is False:
+            caller_id = None
+            if request:
+                auth_h = request.headers.get("Authorization")
+                if auth_h and auth_h.startswith("Bearer "):
+                    try:
+                        p = decode_token(auth_h.split(" ")[1])
+                        if p.get("sub"):
+                            caller_id = UUID(p.get("sub"))
+                    except Exception:
+                        pass
+            if caller_id:
+                stmt_u = select(User).where(User.user_id == caller_id)
+                res_u = await db.execute(stmt_u)
+                caller = res_u.scalar_one_or_none()
+                if caller and caller.user_type == "STUDENT":
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="این درس توسط استاد غیرفعال شده است و امکان ارسال پیام وجود ندارد.",
+                    )
+
     chat_id = await _resolve_or_create_chat(db, chat_type, target_id)
+    tz = get_request_timezone(request)
     now = datetime.now(timezone.utc)
+    user_local_now = now.astimezone(tz)
 
     # 1. Save user message
     user_msg = Message(
@@ -272,8 +338,9 @@ async def send_chat_message_with_rag(
         id=user_msg.message_id,
         text=user_msg.text_content,
         sender="me",
-        time=now.strftime("%H:%M"),
-        date=now.strftime("%d %B"),
+        time=user_local_now.strftime("%H:%M"),
+        date=user_local_now.strftime("%d %B"),
+        created_at=now.isoformat(),
         feedback=None,
     )
 
@@ -330,6 +397,7 @@ async def send_chat_message_with_rag(
 
     # 3. Save Assistant Response
     ai_now = datetime.now(timezone.utc)
+    ai_local_now = ai_now.astimezone(tz)
     ai_msg = Message(
         chat_id=chat_id,
         content_type="TEXT",
@@ -344,8 +412,9 @@ async def send_chat_message_with_rag(
         id=ai_msg.message_id,
         text=ai_msg.text_content,
         sender="other",
-        time=ai_now.strftime("%H:%M"),
-        date=ai_now.strftime("%d %B"),
+        time=ai_local_now.strftime("%H:%M"),
+        date=ai_local_now.strftime("%d %B"),
+        created_at=ai_now.isoformat(),
         feedback=None,
     )
 
@@ -454,14 +523,16 @@ async def add_message_comment(
 
     current_meta = dict(msg.metadata_json) if msg.metadata_json and isinstance(msg.metadata_json, dict) else {}
     comments = list(current_meta.get("comments", []))
+    tz = get_request_timezone(request)
     now = datetime.now(timezone.utc)
+    local_now = now.astimezone(tz)
     new_comment = {
         "id": str(uuid.uuid4()),
         "teacher_name": resolved_teacher_name,
         "teacher_id": teacher_id_val,
         "comment": payload.comment,
-        "time": now.strftime("%H:%M"),
-        "date": now.strftime("%d %B"),
+        "time": local_now.strftime("%H:%M"),
+        "date": local_now.strftime("%d %B"),
         "created_at": now.isoformat(),
         "is_read": False,
         "read_by": [],
@@ -616,9 +687,11 @@ async def bulk_mark_comments_read(
 @router.get("/students/{student_id}/unread-comments-summary")
 async def get_student_unread_comments_summary(
     student_id: str,
+    request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
     student_uuid = resolve_target_uuid("student", student_id)
+    tz = get_request_timezone(request)
     course_stmt = select(Chat.chat_id).where(Chat.chat_type == "COURSE")
     course_res = await db.execute(course_stmt)
     course_ids = list(course_res.scalars().all())
@@ -656,15 +729,27 @@ async def get_student_unread_comments_summary(
                 is_already_read = (student_id and str(student_id) in read_by) or is_read
             if not is_already_read:
                 seen_comment_ids.add(cid)
+                c_created_str = c.get("created_at")
+                c_dt = None
+                if c_created_str:
+                    try:
+                        c_dt = datetime.fromisoformat(c_created_str)
+                    except Exception:
+                        c_dt = None
+                if not c_dt:
+                    c_dt = msg.created_at or datetime.now(timezone.utc)
+                if c_dt.tzinfo is None:
+                    c_dt = c_dt.replace(tzinfo=timezone.utc)
+                c_local_dt = c_dt.astimezone(tz)
                 unread_comments.append({
                     "comment_id": cid,
                     "id": cid,
                     "message_id": str(msg.message_id),
                     "teacher_name": c.get("teacher_name", "استاد"),
                     "comment": c.get("comment", ""),
-                    "created_at": c.get("created_at"),
-                    "time": c.get("time"),
-                    "date": c.get("date"),
+                    "created_at": c_dt.isoformat(),
+                    "time": c_local_dt.strftime("%H:%M"),
+                    "date": c_local_dt.strftime("%d %B"),
                     "chat_id": str(msg.chat_id),
                 })
 
@@ -1138,6 +1223,15 @@ async def send_message(
     current_user: User = Depends(require_chat_member),
     db: AsyncSession= Depends(get_db)
 ):
+    stmt_lesson = select(Lesson).where(Lesson.lesson_id == chat_id)
+    res_l = await db.execute(stmt_lesson)
+    lesson_obj = res_l.scalar_one_or_none()
+    if lesson_obj and lesson_obj.is_active is False and current_user.user_type == "STUDENT":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="این درس توسط استاد غیرفعال شده است و امکان ارسال پیام وجود ندارد.",
+        )
+
     msg = await service.send_message(
         chat_id=chat_id,
         sender_id=current_user.user_id,

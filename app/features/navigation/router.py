@@ -11,7 +11,7 @@ router = APIRouter()
 
 @router.get("/lesson-tabs", response_model=List[LessonTabResponse])
 async def get_lesson_tabs(db: AsyncSession = Depends(get_db)):
-    stmt = select(Lesson).where(Lesson.is_active == True).order_by(Lesson.created_at.asc())
+    stmt = select(Lesson).order_by(Lesson.created_at.asc())
     result = await db.execute(stmt)
     lessons = result.scalars().all()
 

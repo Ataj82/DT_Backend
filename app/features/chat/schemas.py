@@ -15,6 +15,7 @@ class ChatMessageItem(BaseModel):
     sender: str
     time: str
     date: str
+    created_at: Optional[str] = None
     feedback: Optional[str] = None
     comments: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
 

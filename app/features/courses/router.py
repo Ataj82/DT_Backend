@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_db
 from app.core.security import decode_token
 from app.features.users.models import User
-from app.features.lessons.models import Lesson
-from app.features.chat.models import Chat, Message
+from app.features.lessons.models import Lesson, LessonMember
+from app.features.chat.models import Chat, Message, ChatJoinRequest
 from .schemas import (
     CourseResponse,
     CourseDetailResponse,
@@ -20,11 +20,32 @@ from .schemas import (
     CourseOverviewResponse,
     CategoryItem,
     RecentCourseItem,
+    JoinCourseResponse,
 )
 
 router = APIRouter()
 
 OS_COURSE_UUID = UUID("c0000000-0000-4000-8000-000000000001")
+
+COURSE_METADATA = {
+    OS_COURSE_UUID: {
+        "degree": "کارشناسی",
+        "units": 3,
+        "course_code": "۲۱۱۰۰۱۲",
+        "department": "مهندسی کامپیوتر",
+        "term": "نیم‌سال دوم ۱۴۰۴-۱۴۰۵",
+    },
+}
+
+def get_course_meta(lesson: Lesson) -> dict:
+    meta = COURSE_METADATA.get(lesson.lesson_id, {})
+    return {
+        "degree": meta.get("degree", "کارشناسی"),
+        "units": meta.get("units", 3),
+        "course_code": meta.get("course_code", f"۲۱۱{abs(hash(str(lesson.lesson_id))) % 9000 + 1000}"),
+        "department": meta.get("department", "مهندسی کامپیوتر"),
+        "term": meta.get("term", "نیم‌سال دوم ۱۴۰۴-۱۴۰۵"),
+    }
 
 def resolve_course_uuid(course_id: str) -> UUID:
     if course_id.lower() in ("os", "operating-systems"):
@@ -49,8 +70,9 @@ async def get_all_courses(
     result = await db.execute(stmt)
     lessons = result.scalars().all()
 
-    # Check if request comes from an authenticated student
+    # Check if request comes from an authenticated student or teacher
     current_student_id: Optional[UUID] = None
+    is_teacher = False
     if request:
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
@@ -63,8 +85,11 @@ async def get_all_courses(
                     stmt_user = select(User).where(User.user_id == parsed_sub)
                     res_user = await db.execute(stmt_user)
                     user = res_user.scalar_one_or_none()
-                    if user and user.user_type == "STUDENT":
-                        current_student_id = parsed_sub
+                    if user:
+                        if user.user_type == "TEACHER":
+                            is_teacher = True
+                        elif user.user_type == "STUDENT":
+                            current_student_id = parsed_sub
             except Exception:
                 pass
 
@@ -123,6 +148,21 @@ async def get_all_courses(
                     target_l_id = u_msg.chat_id if u_msg.chat_id in [l.lesson_id for l in lessons] else OS_COURSE_UUID
                     unread_counts[target_l_id] = unread_counts.get(target_l_id, 0) + 1
 
+    # Query enrolled courses and pending join requests for student
+    enrolled_lesson_ids = set()
+    pending_lesson_ids = set()
+    if current_student_id:
+        stmt_enl = select(LessonMember.lesson_id).where(LessonMember.user_id == current_student_id)
+        res_enl = await db.execute(stmt_enl)
+        enrolled_lesson_ids = set(res_enl.scalars().all())
+
+        stmt_pnd = select(ChatJoinRequest.chat_id).where(
+            ChatJoinRequest.user_id == current_student_id,
+            ChatJoinRequest.status == "PENDING"
+        )
+        res_pnd = await db.execute(stmt_pnd)
+        pending_lesson_ids = set(res_pnd.scalars().all())
+
     # Resolve real teacher names from users table
     teachers_map: Dict[UUID, str] = {}
     teacher_ids = [l.teacher_id for l in lessons if l.teacher_id]
@@ -148,7 +188,14 @@ async def get_all_courses(
             dt_str = l.created_at.isoformat() if l.created_at else datetime.now(timezone.utc).isoformat()
 
         t_name = teachers_map.get(l.teacher_id)
+        is_enrolled = (l.lesson_id in enrolled_lesson_ids)
+        has_pending = (l.lesson_id in pending_lesson_ids)
 
+        # Private courses are hidden unless the user is a teacher or already enrolled
+        if not is_teacher and not l.is_public and not is_enrolled:
+            continue
+
+        meta = get_course_meta(l)
         courses.append(
             CourseResponse(
                 id=l.lesson_id,
@@ -167,6 +214,13 @@ async def get_all_courses(
                 instructor_name=t_name,
                 isActive=l.is_active if l.is_active is not None else True,
                 is_active=l.is_active if l.is_active is not None else True,
+                is_enrolled=is_enrolled,
+                has_pending_request=has_pending,
+                degree=meta["degree"],
+                units=meta["units"],
+                course_code=meta["course_code"],
+                department=meta["department"],
+                term=meta["term"],
             )
         )
     return courses
@@ -268,6 +322,24 @@ async def get_course_by_id(
         if t_user:
             teacher_name = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
 
+    is_enrolled = False
+    has_pending = False
+    if current_student_id:
+        stmt_mem = select(LessonMember).where(
+            LessonMember.lesson_id == resolved_id,
+            LessonMember.user_id == current_student_id
+        )
+        res_mem = await db.execute(stmt_mem)
+        is_enrolled = res_mem.scalar_one_or_none() is not None
+
+        stmt_pnd = select(ChatJoinRequest).where(
+            ChatJoinRequest.chat_id == resolved_id,
+            ChatJoinRequest.user_id == current_student_id,
+            ChatJoinRequest.status == "PENDING"
+        )
+        res_pnd = await db.execute(stmt_pnd)
+        has_pending = res_pnd.scalar_one_or_none() is not None
+
     return CourseResponse(
         id=lesson.lesson_id,
         title=lesson.title,
@@ -285,6 +357,110 @@ async def get_course_by_id(
         instructor_name=teacher_name,
         isActive=lesson.is_active if lesson.is_active is not None else True,
         is_active=lesson.is_active if lesson.is_active is not None else True,
+        is_enrolled=is_enrolled,
+        has_pending_request=has_pending,
+    )
+
+@router.post("/{course_id}/join", response_model=JoinCourseResponse)
+async def join_or_request_course(
+    course_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    resolved_id = resolve_course_uuid(course_id)
+    stmt = select(Lesson).where(Lesson.lesson_id == resolved_id)
+    result = await db.execute(stmt)
+    lesson = result.scalar_one_or_none()
+
+    if not lesson:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Course not found",
+        )
+
+    current_user_id: Optional[UUID] = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        raw_token = auth_header.split(" ")[1]
+        try:
+            payload = decode_token(raw_token)
+            sub = payload.get("sub")
+            if sub:
+                current_user_id = UUID(sub)
+        except Exception:
+            pass
+
+    if not current_user_id:
+        stmt_st = select(User).where(User.user_type == "STUDENT").limit(1)
+        res_st = await db.execute(stmt_st)
+        st_user = res_st.scalar_one_or_none()
+        if st_user:
+            current_user_id = st_user.user_id
+
+    if not current_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to join course",
+        )
+
+    # Check if already enrolled
+    stmt_mem = select(LessonMember).where(
+        LessonMember.lesson_id == resolved_id,
+        LessonMember.user_id == current_user_id
+    )
+    res_mem = await db.execute(stmt_mem)
+    existing_mem = res_mem.scalar_one_or_none()
+    if existing_mem:
+        return JoinCourseResponse(
+            success=True,
+            status="enrolled",
+            message="شما در حال حاضر عضو این درس هستید.",
+            course_id=resolved_id,
+        )
+
+    # Ensure a corresponding Chat row exists (chat_join_requests references chats.chat_id)
+    stmt_c = select(Chat).where(Chat.chat_id == resolved_id)
+    res_c = await db.execute(stmt_c)
+    chat = res_c.scalar_one_or_none()
+    if not chat:
+        chat = Chat(
+            chat_id=resolved_id,
+            chat_type="COURSE",
+            title=lesson.title,
+            is_public=lesson.is_public,
+        )
+        db.add(chat)
+        await db.flush()
+
+    # Create or verify pending join request (both public and private courses require teacher approval)
+    stmt_req = select(ChatJoinRequest).where(
+        ChatJoinRequest.chat_id == resolved_id,
+        ChatJoinRequest.user_id == current_user_id,
+        ChatJoinRequest.status == "PENDING"
+    )
+    res_req = await db.execute(stmt_req)
+    existing_req = res_req.scalar_one_or_none()
+    if existing_req:
+        return JoinCourseResponse(
+            success=True,
+            status="pending",
+            message="درخواست عضویت شما قبلاً ارسال شده و در انتظار تأیید استاد است.",
+            course_id=resolved_id,
+        )
+
+    join_req = ChatJoinRequest(
+        chat_id=resolved_id,
+        user_id=current_user_id,
+        status="PENDING",
+    )
+    db.add(join_req)
+    await db.commit()
+
+    return JoinCourseResponse(
+        success=True,
+        status="pending",
+        message="درخواست عضویت با موفقیت برای استاد ارسال شد.",
+        course_id=resolved_id,
     )
 
 @router.get("/{course_id}/details", response_model=CourseDetailResponse)
@@ -308,6 +484,7 @@ async def get_course_details(course_id: str, db: AsyncSession = Depends(get_db))
         if t_user:
             teacher_name = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
 
+    meta = get_course_meta(lesson)
     return CourseDetailResponse(
         courseId=lesson.lesson_id,
         name=lesson.title,
@@ -322,6 +499,11 @@ async def get_course_details(course_id: str, db: AsyncSession = Depends(get_db))
         photo_url=lesson.avatar_url,
         isActive=lesson.is_active if lesson.is_active is not None else True,
         is_active=lesson.is_active if lesson.is_active is not None else True,
+        degree=meta["degree"],
+        units=meta["units"],
+        course_code=meta["course_code"],
+        department=meta["department"],
+        term=meta["term"],
     )
 
 @router.put("/{course_id}/details")
