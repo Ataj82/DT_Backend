@@ -8,7 +8,14 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-RUN set -eux;     rm -f /etc/apt/sources.list;     rm -f /etc/apt/sources.list.d/debian.sources;     rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources || true;     . /etc/os-release;     echo "deb http://mirror-linux.runflare.com/debian ${VERSION_CODENAME} main contrib non-free non-free-firmware" > /etc/apt/sources.list;     echo "deb http://mirror-linux.runflare.com/debian ${VERSION_CODENAME}-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list;     echo "deb http://security.debian.org/debian-security ${VERSION_CODENAME}-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+RUN set -eux; \
+    rm -f /etc/apt/sources.list; \
+    rm -f /etc/apt/sources.list.d/debian.sources; \
+    rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources || true; \
+    . /etc/os-release; \
+    echo "deb http://mirror.arvancloud.ir/debian ${VERSION_CODENAME} main contrib non-free non-free-firmware" > /etc/apt/sources.list; \
+    echo "deb http://mirror.arvancloud.ir/debian ${VERSION_CODENAME}-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list; \
+    echo "deb http://mirror.arvancloud.ir/debian-security ${VERSION_CODENAME}-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
 # ---------------------------------------------------
 # PyPI Index Configuration (Official PyPI + Aliyun Fallback)
 # ---------------------------------------------------
