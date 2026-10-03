@@ -6,6 +6,8 @@ Constructs application-wide services and collaborators.
 
 from __future__ import annotations
 
+from ..language.evaluator import LanguageAwareAnswerEvaluator
+from ..language.question_prompt_router import LanguageAwareQuestionPromptBuilder
 from ..framework.assessment_framework import (
     AssessmentFramework,
 )
@@ -309,7 +311,7 @@ class FrameworkBuilder:
         # question-generation pipeline.
         # ======================================================
 
-        answer_evaluator = AnswerEvaluator(
+        answer_evaluator = LanguageAwareAnswerEvaluator(
             llm=llm,
         )
 
@@ -355,60 +357,76 @@ class FrameworkBuilder:
             def retrieve(
                 self,
                 indicator,
+                *,
+                knowledge_model=None,
+                language=None,
             ) -> str:
+                """Retrieve only from the active interview knowledge snapshot.
 
+                The previous implementation searched every repository knowledge
+                base, which allowed unrelated/Persian material to enter an
+                English interview. The session snapshot is now the primary
+                scope. English retrieval also rejects Persian/Arabic-script
+                source passages rather than exposing them to the generator.
+                """
                 query = (
-                    getattr(
-                        indicator,
-                        "description",
-                        None,
-                    )
-                    or getattr(
-                        indicator,
-                        "name",
-                        None,
-                    )
+                    getattr(indicator, "description", None)
+                    or getattr(indicator, "name", None)
                     or str(indicator)
                 )
 
-                parts: list[str] = []
-
-                for knowledge_base in (
-                    self.repository.list()
-                ):
-                    results = (
-                        self.repository.search(
-                            knowledge_id=(
-                                knowledge_base.id
-                            ),
+                if knowledge_model is not None:
+                    knowledge_id = getattr(knowledge_model, "id", None)
+                    if knowledge_id:
+                        results = self.repository.search(
+                            knowledge_id=str(knowledge_id),
                             query=query,
-                            top_k=3,
+                            top_k=5,
                         )
-                    )
-
-                    for result in results:
-
-                        if isinstance(
-                            result,
-                            dict,
-                        ):
-                            text = result.get(
-                                "text"
+                    else:
+                        results = []
+                else:
+                    # Compatibility fallback for legacy callers that do not
+                    # carry a session knowledge snapshot.
+                    results = []
+                    for kb in self.repository.list():
+                        results.extend(
+                            self.repository.search(
+                                knowledge_id=kb.id,
+                                query=query,
+                                top_k=3,
                             )
-                        else:
-                            text = str(
-                                result
-                            )
+                        )
 
-                        if text:
-                            parts.append(
-                                text
-                            )
+                parts: list[str] = []
+                normalized_language = str(language or "en").strip().lower()
+                for result in results:
+                    if isinstance(result, dict):
+                        text = result.get("text")
+                        metadata = result.get("metadata") or {}
+                    else:
+                        text = str(result)
+                        metadata = {}
 
-                return (
-                    "\n\n".join(parts)
-                    or query
-                )
+                    if not text:
+                        continue
+
+                    if normalized_language == "en":
+                        explicit = str(metadata.get("language") or "").strip().lower()
+                        if explicit in {"fa", "fas", "per", "persian", "farsi", "فارسی"}:
+                            continue
+                        # When document metadata is absent, prevent Persian/Arabic
+                        # script from crossing the English interview boundary.
+                        if any("\u0600" <= ch <= "\u06ff" for ch in str(text)):
+                            continue
+
+                    parts.append(str(text))
+
+                if parts:
+                    return "\n\n".join(parts)
+                if normalized_language == "en":
+                    return "No English-compatible knowledge context is available."
+                return query
 
         knowledge_retriever = KnowledgeRetriever(
             knowledge_repository=(
@@ -422,8 +440,8 @@ class FrameworkBuilder:
         # Question Generation
         # ======================================================
 
-        prompt_builder = (
-            QuestionPromptBuilder()
+        prompt_builder = LanguageAwareQuestionPromptBuilder(
+            english=QuestionPromptBuilder(),
         )
 
         question_generator = QuestionGenerator(

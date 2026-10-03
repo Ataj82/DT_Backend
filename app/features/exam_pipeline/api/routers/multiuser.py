@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
+from ..header_utils import content_disposition_attachment
 from ..dependencies_multiuser import get_current_user, get_multiuser_service, require_professor, require_student
 from ..dependencies import get_framework
 from ..schemas.multiuser import (
@@ -15,6 +16,7 @@ from ..schemas.multiuser import (
     RegisterRequest,
     StudentAssignmentResponse,
     UserResponse,
+    UpdateProfileRequest,
     GoalEditRequest,
     CreateGoalRequest,
     PreparationGoalModelResponse,
@@ -28,7 +30,7 @@ router = APIRouter(prefix="/multiuser", tags=["Multi-user"])
 
 
 def _user_response(user: User) -> UserResponse:
-    return UserResponse.model_validate({"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role.value})
+    return UserResponse.model_validate({"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role.value, "preferred_language": getattr(user, "preferred_language", None)})
 
 
 def _assignment_response(assignment) -> AssignmentResponse:
@@ -45,6 +47,7 @@ def _assignment_response(assignment) -> AssignmentResponse:
         "starts_at": assignment.starts_at,
         "ends_at": assignment.ends_at,
         "student_count": len(assignment.students),
+        "language": str((assignment.configuration_snapshot or {}).get("language") or (getattr(assignment.knowledge_snapshot, "metadata", {}) or {}).get("language", "en")),
     })
 
 
@@ -84,6 +87,17 @@ def me(user: User = Depends(get_current_user)):
     return _user_response(user)
 
 
+@router.patch("/auth/profile", response_model=UserResponse)
+def update_profile(request: UpdateProfileRequest, user: User = Depends(require_professor), service=Depends(get_multiuser_service)):
+    try:
+        updated = service.update_profile_language(user=user, preferred_language=request.preferred_language)
+        return _user_response(updated)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/students", response_model=list[UserResponse])
 def list_students(user: User = Depends(require_professor), service=Depends(get_multiuser_service)):
     return [_user_response(x) for x in service.repository.list_users(UserRole.STUDENT)]
@@ -102,6 +116,7 @@ def create_assignment(request: CreateAssignmentRequest, professor: User = Depend
             goal_time_allocations_seconds=request.goal_time_allocations_seconds,
             passing_threshold=request.passing_threshold,
             allow_followup_questions=request.allow_followup_questions,
+            language=request.language,
             starts_at=request.starts_at,
             ends_at=request.ends_at,
         )
@@ -228,10 +243,12 @@ def student_report(
         assignment, enrollment, session = service.get_student_session(student=student, assignment_id=assignment_id)
         _require_completed_session(session)
         payload, media_type, extension = _export_session_report(service, enrollment.session_id, format)
+        filename = f"{assignment.title.strip() or 'interview'}-{enrollment.session_id}.{extension}"
+        fallback = f"interview-report-{enrollment.session_id}.{extension}"
         return Response(
             content=payload,
             media_type=media_type,
-            headers={"Content-Disposition": f'attachment; filename="{assignment.title.strip() or "interview"}-{enrollment.session_id}.{extension}"'},
+            headers={"Content-Disposition": content_disposition_attachment(filename, fallback=fallback)},
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

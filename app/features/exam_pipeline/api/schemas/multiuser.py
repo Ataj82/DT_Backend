@@ -25,6 +25,13 @@ class UserResponse(APIModel):
     email: str
     display_name: str
     role: str
+    # Optional professor/admin default. None means automatic KB language.
+    preferred_language: str | None = None
+
+
+class UpdateProfileRequest(APIModel):
+    # None means automatic: use the selected knowledge-base language.
+    preferred_language: str | None = Field(default=None, pattern=r"^(en|fa)$")
 
 
 class LoginResponse(APIModel):
@@ -42,6 +49,7 @@ class CreateAssignmentRequest(APIModel):
     goal_time_allocations_seconds: dict[str, int] | None = None
     passing_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
     allow_followup_questions: bool = True
+    language: str | None = Field(default=None, pattern=r"^(en|fa)$")
     starts_at: datetime | None = None
     ends_at: datetime | None = None
 
@@ -63,6 +71,7 @@ class AssignmentResponse(APIModel):
     starts_at: datetime | None
     ends_at: datetime | None
     student_count: int
+    language: str = "en"
 
 
 class EnrollmentResponse(APIModel):

@@ -111,6 +111,7 @@ class EvaluationService:
         answer: str,
         turn_index: int | None = None,
         assessment_target: dict[str, Any] | None = None,
+        language: str = "en",
     ) -> GoalDecision:
         """
         Evaluate exactly one learner answer.
@@ -153,6 +154,7 @@ class EvaluationService:
             answer=normalized_answer,
             turn_index=turn_index,
             assessment_target=assessment_target,
+            language=language,
         )
 
         evidence = self._attach_evaluation_identity(
@@ -319,6 +321,7 @@ class EvaluationService:
         answer: str,
         turn_index: Optional[int] = None,
         assessment_target: dict[str, Any] | None = None,
+        language: str = "en",
     ) -> Any:
         evaluate = getattr(
             self.evaluator,
@@ -351,6 +354,7 @@ class EvaluationService:
                 answer=answer,
                 turn_index=turn_index,
                 assessment_target=assessment_target,
+                language=language,
             )
         except Exception as exc:
             # Preserve a safe, actionable reason while avoiding learner-answer

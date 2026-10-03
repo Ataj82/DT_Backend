@@ -48,6 +48,14 @@ class CreateKnowledgeRequest(APIModel):
 
     resources: list[KnowledgeResource]
 
+    # Optional teacher-provided KB language. If omitted, the backend
+    # detects the dominant source language and stores the result.
+    language: str | None = Field(
+        default=None,
+        pattern=r"^(en|fa)$",
+        description="Optional knowledge-base language override: en or fa.",
+    )
+
     metadata: dict[str, Any] = Field(
         default_factory=dict
     )

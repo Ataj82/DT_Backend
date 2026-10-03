@@ -58,6 +58,7 @@ class ExamCreateRequest(APIModel):
 
     mode: Optional[str] = "quiz"
 
+    language: Optional[str] = "fa"
     pass_score: Optional[int] = Field(default=70, ge=0, le=100)
 
     is_active: Optional[bool] = True
@@ -115,6 +116,8 @@ class ExamResponse(APIModel):
     status: str = "published"
 
     is_active: bool = True
+
+    language: Optional[str] = "fa"
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -201,6 +204,7 @@ class ExamUpdateRequest(APIModel):
     end_at: Optional[Union[datetime, str]] = None
     starts_at: Optional[Union[datetime, str]] = None
     ends_at: Optional[Union[datetime, str]] = None
+    language: Optional[str] = None
     is_active: Optional[bool] = None
 
 

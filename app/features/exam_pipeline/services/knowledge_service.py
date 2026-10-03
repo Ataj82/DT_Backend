@@ -22,6 +22,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 from ..knowledge.models import KnowledgeBase
+from ..language.resolver import normalize_language, detect_knowledge_language
 from ..knowledge.processor import KnowledgeProcessor
 from ..unit_of_work.unit_of_work import UnitOfWork
 
@@ -319,10 +320,20 @@ class KnowledgeService:
             ),
         )
 
-        # Preserve the requested language without changing
-        # the existing metadata contract.
-        if "language" not in knowledge_base.metadata:
-            knowledge_base.metadata["language"] = language
+        # Language is additive metadata only. An explicit teacher/KB value
+        # wins; otherwise detect the dominant source language.
+        explicit_language = normalize_language(language)
+        metadata_language = normalize_language(knowledge_base.metadata.get("language"))
+        resolved_language = metadata_language or explicit_language
+        if resolved_language is None:
+            resolved_language = detect_knowledge_language(knowledge_base)
+            source = "knowledge_detection"
+        elif metadata_language:
+            source = "knowledge_base"
+        else:
+            source = "teacher"
+        knowledge_base.metadata["language"] = resolved_language
+        knowledge_base.metadata["language_source"] = source
 
         # ------------------------------------------------------
         # Process knowledge

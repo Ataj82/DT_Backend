@@ -53,6 +53,15 @@ class MultiUserService:
             raise ValueError("Invalid email or password.")
         return user, self.tokens.issue(user.id)
 
+    def update_profile_language(self, *, user: User, preferred_language: str | None) -> User:
+        if user.role not in {UserRole.PROFESSOR, UserRole.ADMIN}:
+            raise PermissionError("Only professors can change the interview-language profile setting.")
+        normalized = None if preferred_language is None else str(preferred_language).strip().lower()
+        if normalized not in {None, "en", "fa"}:
+            raise ValueError("preferred_language must be 'en', 'fa', or null for automatic KB language.")
+        user.preferred_language = normalized
+        return user
+
     def authenticate(self, token: str | None) -> User:
         user_id = self.tokens.resolve(token)
         user = self.repository.get_user(user_id) if user_id else None
@@ -75,6 +84,7 @@ class MultiUserService:
         goal_time_allocations_seconds: dict[str, int] | None = None,
         passing_threshold: float = 0.70,
         allow_followup_questions: bool = True,
+        language: str | None = None,
         starts_at: datetime | None = None,
         ends_at: datetime | None = None,
         assignment_id: str | None = None,
@@ -99,11 +109,17 @@ class MultiUserService:
         if not approved:
             raise ValueError("The selected goal model contains no usable goals.")
 
+        # A professor profile language is the teacher-selected language for new
+        # assignments. An explicit assignment language remains higher priority
+        # and None preserves the existing KB-driven behavior.
+        effective_language = language if language is not None else getattr(professor, "preferred_language", None)
+
         config = InterviewConfigurationRequest(
             duration_seconds=duration_seconds,
             goal_time_allocations_seconds=goal_time_allocations_seconds,
             passing_threshold=passing_threshold,
             allow_followup_questions=allow_followup_questions,
+            language=effective_language,
         )
         GoalTimeManager.validate_configuration(config, approved)
 
@@ -154,8 +170,15 @@ class MultiUserService:
                     raise ValueError(f"User '{student_id}' is not a student.")
                 if student_id in assignment.students:
                     continue
-    
                 configuration = InterviewConfigurationRequest.model_validate(assignment.configuration_snapshot)
+                if not configuration.language:
+                    from ..language.resolver import resolve_language
+                    teacher_lang = (assignment.configuration_snapshot or {}).get("language") if isinstance(assignment.configuration_snapshot, dict) else None
+                    resolved_language, _ = resolve_language(
+                        teacher_language=teacher_lang,
+                        knowledge=assignment.knowledge_snapshot,
+                    )
+                    configuration.language = resolved_language or "fa"
                 session = self.interview_service.create_session(
                     student_id=student_id,
                     knowledge_model=copy.deepcopy(assignment.knowledge_snapshot),
@@ -214,9 +237,40 @@ class MultiUserService:
         return assignment, enrollment, self.interview_service.get_session(enrollment.session_id)
 
     def mark_started(self, *, student: User, assignment_id: str) -> AssignmentStudent:
-        assignment, enrollment, session = self.get_student_session(student=student, assignment_id=assignment_id)
+        assignment = self.repository.get_assignment(assignment_id)
+        if assignment is None:
+            raise ValueError("Assignment not found.")
+        enrollment = assignment.students.get(student.id)
+        if enrollment is None:
+            raise PermissionError("You are not assigned to this interview.")
         if assignment.status != AssignmentStatus.PUBLISHED:
             raise ValueError("This assignment is not published.")
+
+        session = self.interview_service.get_session(enrollment.session_id)
+        if session is None:
+            if enrollment.status != EnrollmentStatus.ASSIGNED:
+                raise ValueError(
+                    f"Interview session '{enrollment.session_id}' not found."
+                )
+            configuration = InterviewConfigurationRequest.model_validate(
+                copy.deepcopy(assignment.configuration_snapshot)
+            )
+            if not configuration.language:
+                from ..language.resolver import resolve_language
+                teacher_lang = (assignment.configuration_snapshot or {}).get("language") if isinstance(assignment.configuration_snapshot, dict) else None
+                resolved_language, _ = resolve_language(
+                    teacher_language=teacher_lang,
+                    knowledge=assignment.knowledge_snapshot,
+                )
+                configuration.language = resolved_language or "fa"
+            session = self.interview_service.restore_session(
+                session_id=enrollment.session_id,
+                student_id=student.id,
+                knowledge_model=copy.deepcopy(assignment.knowledge_snapshot),
+                goal_model=copy.deepcopy(assignment.goal_model_snapshot),
+                configuration=configuration,
+                interviewer_id=assignment.professor_id,
+            )
         now = datetime.now(timezone.utc)
         s_at = assignment.starts_at
         if s_at and s_at.tzinfo is None:

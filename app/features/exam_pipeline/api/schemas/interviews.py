@@ -76,6 +76,14 @@ class InterviewConfigurationRequest(APIModel):
 
     report: ReportType = ReportType.RESEARCH
 
+    # Optional teacher-selected interview language. When omitted, the
+    # interview resolves language from the selected knowledge base.
+    language: str | None = Field(
+        default=None,
+        pattern=r"^(en|fa)$",
+        description="Optional interview language override: en or fa.",
+    )
+
     # Deprecated compatibility field. It is accepted so older clients do
     # not receive HTTP 422, but it is ignored by adaptive navigation.
     max_questions_per_indicator: int | None = Field(

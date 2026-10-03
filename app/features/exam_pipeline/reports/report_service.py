@@ -72,8 +72,11 @@ class ReportService:
         if fmt == "html":
             return render_html(report), "text/html; charset=utf-8", "html"
         if fmt == "pdf":
-            return render_pdf(report), "application/pdf", "pdf"
-        raise ValueError("Unsupported report format. Use json, html, or pdf.")
+            raise ValueError(
+                "PDF export is not supported on the backend. "
+                "Exam reports are served as structured JSON for frontend rendering."
+            )
+        raise ValueError("Unsupported report format. Use json or html.")
 
     # ---------------------------------------------------------
 

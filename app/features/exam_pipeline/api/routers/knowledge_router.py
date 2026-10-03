@@ -39,7 +39,10 @@ def create_knowledge_base(
         title=request.title,
         description=request.description,
         resources=request.resources,
-        metadata=request.metadata,
+        metadata={
+            **request.metadata,
+            **({"language": request.language} if request.language else {}),
+        },
     )
 
     kb = result.knowledge_base
@@ -51,7 +54,7 @@ def create_knowledge_base(
         resource_count=len(kb.documents),
         concept_count=len(kb.concepts),
         relationship_count=len(kb.relationships),
-        language="en",
+        language=str((kb.metadata or {}).get("language", "en")),
         metadata=kb.metadata,
     )
 
@@ -79,7 +82,7 @@ def get_knowledge_base(
         id=kb.id,
         title=kb.title,
         description=kb.description,
-        language="en",
+        language=str((kb.metadata or {}).get("language", "en")),
         resources=[
             d.filename
             for d in kb.documents
@@ -113,7 +116,7 @@ def list_knowledge_bases(
             resource_count=len(kb.documents),
             concept_count=len(kb.concepts),
             relationship_count=len(kb.relationships),
-            language="en",
+            language=str((kb.metadata or {}).get("language", "en")),
             metadata=kb.metadata,
         )
 

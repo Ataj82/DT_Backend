@@ -426,6 +426,7 @@ def create_exam_request(
     # 4. Create MultiUser Assignment
     starts_dt = _parse_time_or_dt(request.start_at or request.starts_at)
     ends_dt = _parse_time_or_dt(request.end_at or request.ends_at)
+    req_lang = getattr(request, "language", None) or "fa"
     assignment = multiuser_service.create_assignment(
         professor=current_user,
         title=request.title,
@@ -436,6 +437,7 @@ def create_exam_request(
         goal_time_allocations_seconds=allocations,
         passing_threshold=request.passing_threshold,
         allow_followup_questions=request.allow_followup_questions,
+        language=req_lang,
         starts_at=starts_dt,
         ends_at=ends_dt,
     )
@@ -518,6 +520,7 @@ def create_exam_request(
         end_at=request.end_at,
         status=assignment.status.value,
         is_active=request.is_active if request.is_active is not None else True,
+        language=req_lang,
         created_at=datetime.utcnow(),
     )
 
@@ -536,6 +539,11 @@ def list_exams(
     for a in assignments:
         goal_model = framework.get_goal_model(a.goal_model_id)
         goals_resp = [_to_goal_response(g) for g in goal_model.goals] if goal_model else []
+        assignment_lang = (
+            (a.configuration_snapshot or {}).get("language")
+            if isinstance(a.configuration_snapshot, dict)
+            else "fa"
+        ) or "fa"
         result.append(
             ExamResponse(
                 quiz_id=a.id,
@@ -556,6 +564,7 @@ def list_exams(
                 end_at=a.ends_at,
                 starts_at=a.starts_at,
                 ends_at=a.ends_at,
+                language=assignment_lang,
                 created_at=datetime.utcnow(),
             )
         )
@@ -1430,6 +1439,10 @@ async def update_exam(
     if req.is_active is not None:
         assignment.status = AssignmentStatus.PUBLISHED if req.is_active else AssignmentStatus.CLOSED
 
+    # Language update
+    if req.language is not None:
+        assignment.configuration_snapshot["language"] = req.language
+
     multiuser_service.repository.save_assignment(assignment)
 
     # Sync to DB
@@ -1475,6 +1488,12 @@ async def update_exam(
 
     date_str = assignment.starts_at.strftime("%Y/%m/%d") if assignment.starts_at else "1405/07/20"
 
+    assignment_lang = (
+        (assignment.configuration_snapshot or {}).get("language")
+        if isinstance(assignment.configuration_snapshot, dict)
+        else "fa"
+    ) or "fa"
+
     return ExamResponse(
         quiz_id=assignment.id,
         id=assignment.id,
@@ -1497,6 +1516,7 @@ async def update_exam(
         ends_at=assignment.ends_at.isoformat() if assignment.ends_at else None,
         status=assignment.status.value,
         is_active=assignment.status == AssignmentStatus.PUBLISHED,
+        language=assignment_lang,
         created_at=datetime.utcnow(),
     )
 

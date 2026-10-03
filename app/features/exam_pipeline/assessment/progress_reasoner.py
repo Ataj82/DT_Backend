@@ -87,12 +87,14 @@ class ProgressReasoner:
 
     DEFAULT_TARGET_MASTERY = 0.70
     DEFAULT_MIN_CONFIDENCE = 0.70
+    DEFAULT_FAILURE_CONSECUTIVE_WEAK_ANSWERS = 3
 
     def __init__(
         self,
         *,
         coverage_engine: Any,
         evidence_planner: Any,
+        failure_consecutive_weak_answers: int = DEFAULT_FAILURE_CONSECUTIVE_WEAK_ANSWERS,
     ) -> None:
         """
         Initialize the progression reasoner.
@@ -120,6 +122,10 @@ class ProgressReasoner:
 
         self.coverage_engine = coverage_engine
         self.evidence_planner = evidence_planner
+        try:
+            self.failure_consecutive_weak_answers = max(3, min(4, int(failure_consecutive_weak_answers)))
+        except (TypeError, ValueError):
+            self.failure_consecutive_weak_answers = self.DEFAULT_FAILURE_CONSECUTIVE_WEAK_ANSWERS
 
     # ==========================================================
     # Public API
@@ -198,6 +204,30 @@ class ProgressReasoner:
         coverage = snapshot.coverage
         mastery = snapshot.mastery
         confidence = snapshot.confidence
+
+        # ------------------------------------------------------
+        # Bounded weak-answer goal failure
+        # ------------------------------------------------------
+        #
+        # A goal that repeatedly receives clearly weak/non-demonstrating
+        # evidence should not consume the entire interview through
+        # remediation. This is intentionally goal-level and language-neutral.
+        # It does not alter scoring or evidence values.
+        # ------------------------------------------------------
+        weak_streak = self._consecutive_weak_answers(goal_state)
+        if weak_streak >= self.failure_consecutive_weak_answers:
+            return self._decision(
+                status=DecisionStatus.FAILED,
+                reason=(
+                    "Goal failed after "
+                    f"{weak_streak} consecutive weak/non-demonstrating answers; "
+                    "advance to the next available goal."
+                ),
+                indicator=None,
+                coverage=coverage,
+                mastery=mastery,
+                confidence=confidence,
+            )
 
         # ------------------------------------------------------
         # Canonical completion
@@ -422,6 +452,35 @@ class ProgressReasoner:
             mastery=mastery,
             confidence=confidence,
         )
+
+    @classmethod
+    def _consecutive_weak_answers(cls, goal_state: Any) -> int:
+        """Count the latest consecutive weak/non-demonstrating evidence.
+
+        Evidence is treated as assessment data only; no language-specific
+        evaluator or prompt logic is involved. A demonstrated answer resets
+        the streak.
+        """
+        evidence_items = getattr(goal_state, "evidence", None) or []
+        streak = 0
+        for evidence in reversed(list(evidence_items)):
+            try:
+                achievement = int(getattr(evidence, "achievement_level", 1))
+            except (TypeError, ValueError):
+                achievement = 1
+            try:
+                confidence = max(0.0, min(1.0, float(getattr(evidence, "confidence", 0.0))))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            try:
+                strength = max(0.0, min(1.0, float(getattr(evidence, "evidence_strength", 0.0))))
+            except (TypeError, ValueError):
+                strength = 0.0
+            demonstrated = bool(getattr(evidence, "indicator_demonstrated", False))
+            if demonstrated or (achievement >= 3 and confidence >= 0.55 and strength >= 0.55):
+                break
+            streak += 1
+        return streak
 
     # ==========================================================
     # Coverage Snapshot

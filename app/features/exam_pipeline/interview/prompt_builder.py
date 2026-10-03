@@ -46,6 +46,15 @@ Language
 
 {request.interview_template.metadata.get("language","English")}
 
+English-language isolation
+--------------------------
+If the interview language is English:
+• Generate the question in English only.
+• Do not copy Persian, Arabic, or other non-English prose from the knowledge context,
+  goal text, indicator text, previous feedback, or question history.
+• Technical identifiers such as Python, API, SQL, def, and return may remain unchanged.
+• The learner-facing question must contain no Persian or Arabic-script prose.
+
 Probe Policy
 
 {request.interview_template.probe_policy.value}

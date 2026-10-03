@@ -30,8 +30,13 @@ def download_report(session_id: str, format: str, framework=Depends(get_framewor
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    from ..header_utils import content_disposition_attachment
     filename = f"interview-report-{session_id}.{extension}"
-    return Response(content=payload, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"Content-Disposition": content_disposition_attachment(filename)},
+    )
 
 @router.get("/{session_id}/integrity")
 def verify_integrity(session_id: str, framework=Depends(get_framework)):

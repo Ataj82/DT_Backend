@@ -64,16 +64,36 @@ class InterviewService:
         goal_model,
         configuration=None,
         interviewer_id: str | None = None,
+        session_id: str | None = None,
     ) -> InterviewSession:
 
         session = InterviewSession(
-            id=str(uuid4()),
+            id=str(session_id or uuid4()),
             student_id=student_id,
             knowledge_model=knowledge_model,
             goal_model=goal_model,
             configuration=configuration,
             interviewer_id=interviewer_id,
         )
+
+        # Persist the resolved interview language on the session itself.
+        # Configuration is the normal source, but session metadata is the
+        # immutable runtime fallback used when a later request reconstructs
+        # the conversation context. This prevents a Persian session from
+        # silently falling back to the global English default after turn 1.
+        try:
+            from ..language.resolver import normalize_language, resolve_language
+            configured_language = normalize_language(
+                getattr(configuration, "language", None),
+                default=None,
+            )
+            if not configured_language and knowledge_model:
+                configured_language, _ = resolve_language(knowledge=knowledge_model)
+            session.metadata["language"] = configured_language or "fa"
+        except Exception:
+            # Language metadata is additive; never make legacy session
+            # creation fail because the optional language helper is absent.
+            pass
 
         with self.uow:
 
@@ -82,6 +102,34 @@ class InterviewService:
             self.uow.commit()
 
         return session
+
+    def restore_session(
+        self,
+        *,
+        session_id: str,
+        student_id: str,
+        knowledge_model,
+        goal_model,
+        configuration=None,
+        interviewer_id: str | None = None,
+    ) -> InterviewSession:
+        """Restore a missing, never-started session using its assignment snapshot.
+
+        This is deliberately narrower than generic session creation: callers
+        should use it only when the enrollment is still ASSIGNED and therefore
+        there is no assessment history to overwrite.
+        """
+        existing = self.get_session(session_id)
+        if existing is not None:
+            return existing
+        return self.create_session(
+            student_id=student_id,
+            knowledge_model=knowledge_model,
+            goal_model=goal_model,
+            configuration=configuration,
+            interviewer_id=interviewer_id,
+            session_id=session_id,
+        )
 
     # ---------------------------------------------------------
     # Runtime

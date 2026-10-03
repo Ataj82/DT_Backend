@@ -66,11 +66,16 @@ class GoalTimeManager:
     @staticmethod
     def _goal_id(state: Any) -> str:
         goal = getattr(state, "goal", None)
-        return str(getattr(goal, "id", "")).strip()
+        if goal is not None:
+            gid = getattr(goal, "id", None)
+            if gid:
+                return str(gid).strip()
+        gid = getattr(state, "goal_id", None) or getattr(state, "id", None)
+        return str(gid or "").strip()
 
     @staticmethod
     def _weight(state: Any) -> float:
-        goal = getattr(state, "goal", None)
+        goal = getattr(state, "goal", None) or state
         importance = max(0.10, float(getattr(goal, "importance", 1.0) or 1.0))
         difficulty = min(1.0, max(0.0, float(getattr(goal, "difficulty", 0.5) or 0.5)))
         estimated_questions = max(1.0, float(getattr(goal, "estimated_questions", 3) or 3))
@@ -243,7 +248,7 @@ class GoalTimeManager:
     def goal_expired(self, goal_id: str) -> bool:
         return self.goal_remaining(goal_id) <= 0.0
 
-    def finish_goal(self, goal_id: str, *, outcome: str) -> dict[str, float | str]:
+    def finish_goal(self, goal_id: str, *, outcome: str) -> dict[str, float | str | dict[str, float]]:
         goal_id = str(goal_id).strip()
         if not goal_id:
             return {"goal_id": goal_id, "outcome": outcome, "budget_seconds": 0.0, "elapsed_seconds": 0.0, "remaining_seconds": 0.0}
@@ -253,6 +258,7 @@ class GoalTimeManager:
         elapsed = min(budget, elapsed_raw)
         remaining = max(0.0, budget - elapsed)
         finished = self.state["finished_goals"]
+        redistributed = 0.0
         if goal_id not in finished:
             finished[goal_id] = {
                 "outcome": str(outcome),
@@ -261,32 +267,69 @@ class GoalTimeManager:
                 "remaining_seconds": round(remaining, 2),
                 "finished_at": self._now().isoformat(),
             }
-            if remaining > 0:
+            redistributed = remaining
+            if redistributed > 0:
                 self.state["redistributed_seconds"] = round(
-                    float(self.state.get("redistributed_seconds", 0.0)) + remaining, 2
+                    float(self.state.get("redistributed_seconds", 0.0)) + redistributed, 2
                 )
-        self._redistribute_to_unstarted()
-        return {
+
+        # Release the unused portion of the finished goal immediately.  The
+        # global wall-clock remainder remains the hard upper bound, while the
+        # explicit release makes the intended invariant auditable:
+        #
+        #     next-goal pool = unstarted allocations + released goal time
+        #
+        # This avoids treating a failed goal as if its unused allocation simply
+        # disappeared.  The existing wall-clock budget remains authoritative.
+        new_allocations = self._redistribute_to_unstarted(
+            released_seconds=redistributed,
+        )
+        result = {
             "goal_id": goal_id,
             "outcome": str(outcome),
             "budget_seconds": round(budget, 2),
             "elapsed_seconds": round(elapsed, 2),
             "remaining_seconds": round(remaining, 2),
+            "released_seconds": round(redistributed, 2),
+            "redistributed_seconds": round(redistributed, 2),
         }
+        if new_allocations:
+            result["next_goal_allocations"] = new_allocations
+        return result
 
-    def _redistribute_to_unstarted(self) -> None:
+    def _redistribute_to_unstarted(self, *, released_seconds: float = 0.0) -> dict[str, float]:
         finished_ids = set(self.state["finished_goals"])
         started_ids = set(self.state["started_goals"])
-        candidates = [s for s in self._goal_states() if self._goal_id(s) not in finished_ids and self._goal_id(s) not in started_ids]
+        candidates = [
+            s for s in self._goal_states()
+            if self._goal_id(s) not in finished_ids
+            and self._goal_id(s) not in started_ids
+        ]
         if not candidates:
-            return
-        # The global wall-clock remainder is authoritative. This prevents
-        # allocation drift after answer/evaluation/generation overhead.
-        remaining = self.global_remaining()
-        allocations = self._allocate(remaining, candidates)
+            return {}
+
+        # The pool is explicitly composed from the allocations still assigned
+        # to unstarted goals plus any time released by the just-finished goal.
+        # Cap it by the authoritative global wall-clock remainder so evaluation
+        # and question-generation overhead can never create time.
+        candidate_ids = {self._goal_id(state) for state in candidates}
+        existing_pool = sum(
+            max(0.0, float(self.state["allocations"].get(gid, 0.0)))
+            for gid in candidate_ids
+        )
+        released = max(0.0, float(released_seconds or 0.0))
+        pool = min(
+            self.global_remaining(),
+            existing_pool + released,
+        )
+        allocations = self._allocate(pool, candidates)
         for state in candidates:
             gid = self._goal_id(state)
             self.state["allocations"][gid] = allocations.get(gid, 0.0)
+        return {
+            gid: round(self.state["allocations"].get(gid, 0.0), 2)
+            for gid in candidate_ids
+        }
 
     def snapshot(self, current_goal_id: str | None = None) -> dict[str, Any]:
         current = str(current_goal_id).strip() if current_goal_id else None

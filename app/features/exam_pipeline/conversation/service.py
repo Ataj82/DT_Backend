@@ -86,6 +86,7 @@ from ..interview.conversation_turn import ConversationTurn
 from ..interview.generated_question import GeneratedQuestion
 from ..interview.question_request import QuestionRequest
 from ..templates.models import InterviewTemplate
+from ..language.resolver import normalize_language
 
 
 logger = logging.getLogger(__name__)
@@ -714,6 +715,23 @@ class ConversationService:
             answer=answer,
         )
 
+    @staticmethod
+    def _session_language(context) -> str:
+        # Session metadata is the persisted language boundary for the
+        # interview. Prefer it over a reconstructed/default configuration so
+        # a Persian session can never drift to English on a later turn.
+        session = getattr(context, "session", None)
+        metadata = getattr(session, "metadata", {}) or {}
+        language = normalize_language(metadata.get("language"))
+        if language:
+            return language
+
+        configuration = getattr(context, "configuration", None)
+        language = normalize_language(getattr(configuration, "language", None))
+        if language:
+            return language
+        return "en"
+
     def _evaluate_answer(
         self,
         *,
@@ -825,6 +843,7 @@ class ConversationService:
                 question=evaluation_context.question,
                 answer=evaluation_context.answer,
                 turn_index=evaluation_context.turn_index,
+                language=self._session_language(context),
             )
             abet_target = ((previous_turn.metadata.get("abet") or {}).get("target"))
             if abet_target:
@@ -1845,6 +1864,7 @@ class ConversationService:
                 excluded_questions=self._recent_questions(context.session),
                 difficulty=target_difficulty,
                 difficulty_reason="continuity_difficulty_lock_fallback",
+                language=self._session_language(context),
             )
             logger.warning(
                 "Question continuity retries exhausted for indicator=%s; "
@@ -1860,6 +1880,7 @@ class ConversationService:
                 excluded_questions=self._recent_questions(context.session),
                 difficulty=target_difficulty,
                 difficulty_reason="opening_difficulty_lock_fallback",
+                language=self._session_language(context),
             )
             logger.warning(
                 "Question generation repeatedly violated the fixed difficulty "
@@ -1897,6 +1918,7 @@ class ConversationService:
                 excluded_questions=self._recent_questions(context.session),
                 difficulty=target_difficulty,
                 difficulty_reason="duplicate_difficulty_lock_fallback",
+                language=self._session_language(context),
             )
             logger.warning(
                 "Duplicate question generation exhausted for indicator=%s; "
@@ -2524,45 +2546,40 @@ class ConversationService:
         excluded_questions=None,
         difficulty: float | None = None,
         difficulty_reason: str = "duplicate_generation_fallback",
+        language: str = "en",
     ) -> GeneratedQuestion:
-        """Create a deterministic, indicator-grounded probe that is not a recent repeat."""
+        """Create a deterministic, language-locked, indicator-grounded probe."""
         indicator_id = str(getattr(indicator, "id", "")).strip()
         name = str(getattr(indicator, "name", "")).strip()
         description = str(getattr(indicator, "description", "") or "").strip()
-        topic = description or name or indicator_id or str(getattr(goal, "title", "the topic"))
-        candidates = [
-            (
-                f"Explain {topic} in your own words, give a concrete example, "
-                "and describe how you would verify that your approach is correct."
-            ),
-            (
-                f"Describe how you would apply {topic} to a practical problem, "
-                "show the key steps, and explain how you would check the result."
-            ),
-            (
-                f"Compare two valid ways of demonstrating {topic}, give a concrete "
-                "example, and explain what evidence would show that the approach is correct."
-            ),
-            (
-                f"Walk through a new example involving {topic}, identify the critical "
-                "reasoning step, and explain how you would verify your answer."
-            ),
-        ]
-        excluded = {
-            str(q).strip()
-            for q in (excluded_questions or [])
-            if isinstance(q, str) and q.strip()
-        }
+
+        from ..language.resolver import normalize_language
+        resolved_language = normalize_language(language, default="en") or "en"
+
+        if resolved_language == "fa":
+            from ..language.persian.text import build_persian_fallback_questions
+            topic = description or name or indicator_id or str(getattr(goal, "title", "موضوع موردنظر"))
+            candidates = build_persian_fallback_questions(topic)
+        else:
+            topic = description or name or indicator_id or str(getattr(goal, "title", "the topic"))
+            candidates = [
+                f"Explain {topic} in your own words, give a concrete example, and describe how you would verify that your approach is correct.",
+                f"Describe how you would apply {topic} to a practical problem, show the key steps, and explain how you would check the result.",
+                f"Compare two valid ways of demonstrating {topic}, give a concrete example, and explain what evidence would show that the approach is correct.",
+                f"Walk through a new example involving {topic}, identify the critical reasoning step, and explain how you would verify your answer.",
+            ]
+
+        excluded = {str(q).strip() for q in (excluded_questions or []) if isinstance(q, str) and q.strip()}
         question = next((candidate for candidate in candidates if candidate not in excluded), candidates[0])
         return GeneratedQuestion(
             question=question,
-            context="Deterministic fallback used after repeated duplicate generation.",
-            indicator_id=indicator_id,
-            difficulty=(
-                difficulty
-                if difficulty is not None
-                else getattr(indicator, "difficulty", None)
+            context=(
+                "Deterministic Persian fallback used after repeated generation failure."
+                if resolved_language == "fa"
+                else "Deterministic fallback used after repeated duplicate generation."
             ),
+            indicator_id=indicator_id,
+            difficulty=(difficulty if difficulty is not None else getattr(indicator, "difficulty", None)),
             difficulty_reason=difficulty_reason,
         )
 
@@ -3371,9 +3388,50 @@ class ConversationService:
             None,
         )
 
-        if template is not None:
-            return template
+        # The session carries the authoritative language contract.  A persisted
+        # assignment/template can legitimately still contain a stale/default
+        # language value (for example ``en`` on a template created before the
+        # Persian session was started).  Never let that template override the
+        # session language on a reconstructed turn.
+        session = getattr(context, "session", None)
+        session_metadata = getattr(session, "metadata", {}) or {}
+        session_language = normalize_language(
+            session_metadata.get("language"),
+            default=None,
+        )
 
+        if template is not None:
+            if session_language is None:
+                return template
+
+            template_metadata = dict(getattr(template, "metadata", {}) or {})
+            template_metadata["language"] = session_language
+
+            # Do not mutate the shared configuration/template object.
+            model_copy = getattr(template, "model_copy", None)
+            if callable(model_copy):
+                return model_copy(update={"metadata": template_metadata})
+
+            # Compatibility with lightweight injected template doubles used by
+            # integrations/tests.
+            import copy
+            copied = copy.copy(template)
+            try:
+                copied.metadata = template_metadata
+            except Exception:
+                return template
+            return copied
+
+        # The session carries the persisted language contract. Prefer it over
+        # a missing/default runtime configuration when reconstructing a turn.
+        session = getattr(context, "session", None)
+        metadata = getattr(session, "metadata", {}) or {}
+        language = normalize_language(metadata.get("language"), default=None)
+        if language is None:
+            language = normalize_language(
+                getattr(configuration, "language", None),
+                default="en",
+            )
         return InterviewTemplate(
             id=cls.DEFAULT_TEMPLATE_ID,
             name=cls.DEFAULT_TEMPLATE_NAME,
@@ -3382,6 +3440,9 @@ class ConversationService:
                 "id",
                 "",
             ),
+            metadata={
+                "language": language or "en",
+            },
         )
 
     # ==========================================================

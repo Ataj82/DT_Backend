@@ -59,9 +59,21 @@ class QuestionGenerator:
         # Retrieve supporting knowledge
         # ---------------------------------------------
 
-        context = self.knowledge_retriever.retrieve(
-            request.indicator
-        )
+        knowledge_model = getattr(request.session, "knowledge_model", None)
+        if knowledge_model is None:
+            # Compatibility with legacy/injected retrievers that expose only
+            # retrieve(indicator). Production sessions always carry a snapshot.
+            context = self.knowledge_retriever.retrieve(request.indicator)
+        else:
+            context = self.knowledge_retriever.retrieve(
+                request.indicator,
+                knowledge_model=knowledge_model,
+                language=(
+                    (getattr(request.session, "metadata", {}) or {}).get("language")
+                    or (getattr(request.interview_template, "metadata", {}) or {}).get("language")
+                    or "en"
+                ),
+            )
 
         # ---------------------------------------------
         # Extract previous questions from session
@@ -95,8 +107,79 @@ class QuestionGenerator:
         )
 
         # ---------------------------------------------
-        # Return DTO
+        # Persian-only output cleanup
         # ---------------------------------------------
+        # The English generation path above is intentionally preserved.
+        # Persian receives a small deterministic cleanup/quality gate because
+        # some local multilingual models echo labels such as "سؤال:" or
+        # explanatory meta-text instead of returning the requested utterance.
+        from ..language.resolver import normalize_language
+        from ..language.persian.text import (
+            build_persian_repair_prompt,
+            clean_persian_question,
+            is_likely_persian_question,
+            needs_persian_fluency_repair,
+        )
+
+        session_metadata = getattr(request.session, "metadata", {}) or {}
+        language = normalize_language(
+            session_metadata.get("language")
+        )
+        if language is None:
+            language = normalize_language(
+                (getattr(request.interview_template, "metadata", {}) or {}).get("language")
+            ) or "en"
+        if language == "fa":
+            cleaned = clean_persian_question(question)
+            if (
+                not is_likely_persian_question(cleaned)
+                or needs_persian_fluency_repair(cleaned)
+            ):
+                repaired = clean_persian_question(
+                    self.llm.chat(
+                        [
+                            {
+                                "role": "user",
+                                "content": build_persian_repair_prompt(cleaned or question),
+                            }
+                        ]
+                    )
+                )
+                if is_likely_persian_question(repaired):
+                    cleaned = repaired
+            question = cleaned or question.strip()
+        else:
+            # English is a closed output-language boundary. A multilingual
+            # model may otherwise echo Persian source/context even though the
+            # interview itself is configured as English.
+            from ..language.english.text import (
+                build_english_question_repair_prompt,
+                clean_english_question,
+                is_likely_english_text,
+            )
+            cleaned = clean_english_question(question)
+            if not is_likely_english_text(cleaned):
+                repaired = clean_english_question(
+                    self.llm.chat(
+                        [
+                            {
+                                "role": "user",
+                                "content": build_english_question_repair_prompt(question),
+                            }
+                        ]
+                    )
+                )
+                if is_likely_english_text(repaired):
+                    cleaned = repaired
+            question = cleaned or question.strip()
+            if not is_likely_english_text(question):
+                raise RuntimeError(
+                    "English interview language contract violated: "
+                    "question generation did not produce English output."
+                )
+
+        # ---------------------------------------------
+        # Return DTO ----------------------------------
 
         return GeneratedQuestion(
             question=question,

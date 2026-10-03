@@ -30,9 +30,28 @@ class KnowledgeRetriever:
         self.knowledge_repository = knowledge_repository
         self.max_context_chars = max_context_chars
 
-    def retrieve(self, indicator) -> str:
-        """Return bounded supporting knowledge for an indicator."""
-        context = self.knowledge_repository.retrieve(indicator)
+    def retrieve(
+        self,
+        indicator,
+        *,
+        knowledge_model=None,
+        language: str | None = None,
+    ) -> str:
+        """Return bounded supporting knowledge for the selected interview scope.
+
+        ``knowledge_model`` and ``language`` are optional for compatibility
+        with older injected repositories/tests. Production interview sessions
+        pass both so retrieval cannot cross knowledge-base or language
+        boundaries.
+        """
+        if knowledge_model is None:
+            context = self.knowledge_repository.retrieve(indicator)
+        else:
+            context = self.knowledge_repository.retrieve(
+                indicator,
+                knowledge_model=knowledge_model,
+                language=language,
+            )
 
         if not isinstance(context, str):
             context = str(context)

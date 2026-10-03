@@ -39,6 +39,8 @@ class User:
     password_hash: str
     created_at: datetime = field(default_factory=utc_now)
     active: bool = True
+    # Optional professor default for interview language. None means resolve from KB.
+    preferred_language: str | None = None
 
 
 @dataclass(slots=True)

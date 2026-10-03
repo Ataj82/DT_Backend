@@ -34,6 +34,8 @@ from ..knowledge.graph import (
 )
 
 from ..knowledge.models import BloomLevel
+from ..language.resolver import normalize_language
+from ..language.goal_router import build_goal_text
 
 
 class GoalGenerator:
@@ -59,6 +61,7 @@ class GoalGenerator:
             graph: KnowledgeGraph,
             max_goals: int | None = None,
             include_optional: bool = True,
+            language: str | None = None,
     ) -> GoalModel:
         """
         Generate a complete GoalModel.
@@ -74,6 +77,7 @@ class GoalGenerator:
         """
 
         goals: list[Goal] = []
+        resolved_language = normalize_language(language, default="en") or "en"
 
         concept_nodes = [
             node
@@ -86,6 +90,7 @@ class GoalGenerator:
             goal = self._build_goal(
                 node=node,
                 graph=graph,
+                language=resolved_language,
             )
 
             goals.append(goal)
@@ -108,6 +113,7 @@ class GoalGenerator:
         *,
         node,
         graph: KnowledgeGraph,
+        language: str = "en",
     ) -> Goal:
 
         bloom = self._estimate_bloom_level(
@@ -130,14 +136,19 @@ class GoalGenerator:
             weight=1.0,
         )
 
+        title, description = build_goal_text(
+            language=language,
+            label=node.label,
+            description=node.description,
+        )
+
         return Goal(
 
             id=str(uuid4()),
 
-            title=f"Demonstrate understanding of {node.label}",
+            title=title,
 
-            description=node.description
-            or f"Assess understanding of {node.label}.",
+            description=description,
 
             bloom_level=bloom,
 

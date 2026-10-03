@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..assessment.goal_time_manager import GoalTimeManager
+from ..language.resolver import resolve_language
 
 
 @dataclass(slots=True)
@@ -55,13 +56,13 @@ class AssessmentFramework:
         Create and ingest a knowledge base.
         """
 
-        metadata = metadata or {}
+        metadata = dict(metadata or {})
 
         return self.services.knowledge_service.ingest_resources(
             resources=resources,
             title=title,
             description=description or "",
-            language=metadata.get("language", "en"),
+            language=metadata.get("language"),
             metadata=metadata,
         )
 
@@ -285,6 +286,28 @@ class AssessmentFramework:
                 raise ValueError(
                     f"Goal model '{goal_model_id}' not found."
                 )
+
+        # ------------------------------------------------------
+        # Resolve interview language. Teacher selection wins over the
+        # selected KB language/detection. This is additive session metadata.
+        # ------------------------------------------------------
+
+        resolved_language, language_source = resolve_language(
+            teacher_language=getattr(configuration, "language", None),
+            knowledge=knowledge_model,
+        )
+        if configuration is not None:
+            try:
+                configuration.language = resolved_language
+            except Exception:
+                pass
+            metadata = dict(getattr(configuration, "metadata", {}) or {})
+            metadata["language"] = resolved_language
+            metadata["language_source"] = language_source
+            try:
+                configuration.metadata = metadata
+            except Exception:
+                pass
 
         # ------------------------------------------------------
         # Validate explicit goal-time configuration before persistence.

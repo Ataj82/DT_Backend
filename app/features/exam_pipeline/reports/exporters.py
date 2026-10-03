@@ -151,59 +151,35 @@ def render_html(report) -> bytes:
     return _report_body(report_to_dict(report)).encode("utf-8")
 
 
+def _report_language(data: dict[str, Any]) -> str:
+    """Resolve report presentation language without changing assessment state."""
+    metadata = data.get("metadata") or {}
+    assessment_metadata = metadata.get("assessment_metadata") or {}
+
+    candidates = (
+        assessment_metadata.get("language"),
+        metadata.get("language"),
+        (metadata.get("configuration") or {}).get("language")
+        if isinstance(metadata.get("configuration"), dict)
+        else getattr(metadata.get("configuration"), "language", None),
+    )
+
+    for value in candidates:
+        if value is None:
+            continue
+        raw = getattr(value, "value", value)
+        normalized = str(raw).strip().casefold()
+        if normalized in {"fa", "persian", "farsi", "interviewlanguage.persian"}:
+            return "fa"
+        if normalized in {"en", "english", "interviewlanguage.english"}:
+            return "en"
+
+    return "en"
+
+
 def render_pdf(report) -> bytes:
-    try:
-        from io import BytesIO
-        from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
-        from reportlab.lib import colors
-        from reportlab.lib.styles import getSampleStyleSheet
-    except ImportError as exc:
-        raise RuntimeError("PDF export requires the reportlab package.") from exc
+    raise ValueError(
+        "PDF export is not supported on the backend. "
+        "Exam reports are served as structured JSON for frontend rendering."
+    )
 
-    data = report_to_dict(report)
-    metrics = data.get("metrics") or {}
-    goals = metrics.get("goal_metrics") or []
-    indicators = metrics.get("indicator_metrics") or []
-    conversation = (data.get("metadata") or {}).get("conversation") or []
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=24, leftMargin=24, topMargin=24, bottomMargin=24)
-    styles = getSampleStyleSheet()
-    body = styles["BodyText"]
-    story = [Paragraph("Interview Assessment Report", styles["Title"]), Spacer(1, 8)]
-    story += [
-        Paragraph(f"Session: {html.escape(str(data.get('session_id','')))}", body),
-        Paragraph(f"Student: {html.escape(str(data.get('student_id','')))}", body),
-        Paragraph(f"Overall mastery: {_pct(metrics.get('overall_score'))} &nbsp;&nbsp; Overall coverage: {_pct(metrics.get('overall_coverage'))} &nbsp;&nbsp; Overall confidence: {_pct(metrics.get('overall_confidence'))}", body),
-        Paragraph(f"Questions: {int(metrics.get('total_questions',0))}", body),
-        Spacer(1, 8),
-    ]
-
-    goal_table = [["Goal", "Mastery", "Coverage", "Confidence", "Completed", "Budget", "Used", "Remaining"]]
-    for g in goals:
-        goal_table.append([str(g.get("title", "")), _pct(g.get("mastery", g.get("score"))), _pct(g.get("coverage")), _pct(g.get("confidence")), "Yes" if g.get("completed") else "No", f"{_fmt(g.get('time_budget_seconds'),1)}s", f"{_fmt(g.get('time_elapsed_seconds'),1)}s", f"{_fmt(g.get('time_remaining_seconds'),1)}s"])
-    t = Table(goal_table, repeatRows=1)
-    t.setStyle(TableStyle([("GRID", (0,0), (-1,-1), .4, colors.grey), ("BACKGROUND", (0,0), (-1,0), colors.lightgrey), ("VALIGN", (0,0), (-1,-1), "TOP")]))
-    story += [Paragraph("Goals", styles["Heading2"]), t, Spacer(1, 10)]
-
-    indicator_table = [["Indicator", "Bloom", "Achievement", "Mastery", "Confidence", "Evidence", "Attempts", "Demonstrated"]]
-    for i in indicators:
-        indicator_table.append([str(i.get("description", "")), str(i.get("bloom_level", "")), str(i.get("achievement_level", i.get("achieved_level", "—"))), _pct(i.get("mastery")), _pct(i.get("confidence")), _pct(i.get("evidence_strength")), str(i.get("attempts", 0)), "Yes" if i.get("demonstrated") else "No"])
-    t2 = Table(indicator_table, repeatRows=1, colWidths=[170,55,65,55,65,60,50,70])
-    t2.setStyle(TableStyle([("GRID", (0,0), (-1,-1), .4, colors.grey), ("BACKGROUND", (0,0), (-1,0), colors.lightgrey), ("VALIGN", (0,0), (-1,-1), "TOP")]))
-    story += [Paragraph("Indicators", styles["Heading2"]), t2, PageBreak(), Paragraph("Interview Conversation", styles["Heading2"])]
-
-    conv_table = [["Turn", "Goal", "Indicator", "Question", "Student answer", "Bloom", "Achievement", "Evidence", "Difficulty"]]
-    for item in conversation:
-        ev = item.get("evaluation") or {}
-        conv_table.append([
-            str(item.get("turn_number", "")), str(item.get("goal_id", ""))[:12], str(item.get("indicator_id", ""))[:12],
-            Paragraph(html.escape(str(item.get("question", "") or "")), body),
-            Paragraph(html.escape(str(item.get("answer", "") or "")), body),
-            str(ev.get("bloom_level", "—")), str(ev.get("achievement_level", "—")), _pct(ev.get("evidence_strength")), str(ev.get("difficulty_after", "—")),
-        ])
-    t3 = Table(conv_table, repeatRows=1, colWidths=[30,55,55,170,190,50,55,55,55])
-    t3.setStyle(TableStyle([("GRID", (0,0), (-1,-1), .35, colors.grey), ("BACKGROUND", (0,0), (-1,0), colors.lightgrey), ("VALIGN", (0,0), (-1,-1), "TOP")]))
-    story.append(t3)
-    doc.build(story)
-    return buffer.getvalue()

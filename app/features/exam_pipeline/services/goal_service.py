@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from ..goals.generator import GoalGenerator
 from ..goals.models import GoalModel, GoalStatus
+from ..language.resolver import detect_knowledge_language, normalize_language
 from ..unit_of_work.unit_of_work import UnitOfWork
 
 
@@ -64,10 +65,14 @@ class GoalService:
                     "Knowledge base graph has not been generated."
                 )
 
+            language = normalize_language((getattr(kb, "metadata", {}) or {}).get("language"))
+            if language is None:
+                language = detect_knowledge_language(kb)
             goal_model = self.generator.generate(
                 graph=kb.graph,
                 max_goals=max_goals,
                 include_optional=include_optional,
+                language=language,
             )
 
             self.uow.goals.save(goal_model)
