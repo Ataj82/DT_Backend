@@ -1,6 +1,6 @@
 """
-Biometric & Affect Telemetry Configuration for Backend.
-Supports direct execution and microservice proxying.
+Biometric & Affect Telemetry Configuration for DT Backend.
+Manages local ONNX model paths and SQLite/JSON storage directly in Backend.
 """
 
 import os
@@ -9,17 +9,10 @@ from pathlib import Path
 # Base directory paths
 APP_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = APP_DIR.parent.parent
-PROJECT_ROOT = BACKEND_DIR.parent
+UPLOADS_DIR = BACKEND_DIR / "uploads"
 
-# Models locations (checks local features/biometrics/models, face-auth-service, or env)
-DEFAULT_LOCAL_MODELS_DIR = APP_DIR / "models"
-DEFAULT_FACE_SVC_MODELS_DIR = PROJECT_ROOT / "face" / "face-auth-service" / "models"
-
-MODELS_DIR = (
-    DEFAULT_LOCAL_MODELS_DIR
-    if DEFAULT_LOCAL_MODELS_DIR.exists()
-    else DEFAULT_FACE_SVC_MODELS_DIR
-)
+# Local models directory
+MODELS_DIR = APP_DIR / "models"
 
 # ONNX Model Paths
 GAZE_MODEL_PATH = os.getenv(
@@ -32,22 +25,16 @@ EMOTION_MODEL_PATH = os.getenv(
     str(MODELS_DIR / "enet_b0_8_va_mtl.onnx")
 )
 
-# SQLite Telemetry Storage
+# SQLite Telemetry Storage (in Backend/uploads/)
 DB_FILE = os.getenv(
     "BIOMETRICS_DB_FILE",
-    str(PROJECT_ROOT / "face" / "face-auth-service" / "stress_telemetry.db")
+    str(UPLOADS_DIR / "stress_telemetry.db")
 )
 
-# Persistent Biometric Profiles Storage
+# Persistent Biometric Profiles Storage (in Backend/uploads/)
 PROFILES_STORE_FILE = os.getenv(
     "BIOMETRIC_PROFILES_FILE",
-    str(PROJECT_ROOT / "Backend" / "uploads" / "biometric_profiles.json")
-)
-
-# Biometrics Service URL (for proxying when running as microservice in Docker)
-BIOMETRICS_SERVICE_URL = os.getenv(
-    "BIOMETRICS_SERVICE_URL",
-    "http://face_auth_api:8000"
+    str(UPLOADS_DIR / "biometric_profiles.json")
 )
 
 # ArcFace Verification Parameters

@@ -42,3 +42,11 @@ ua-parser==0.18.0
 
 # geo ip
 geoip2==4.8.0
+
+# Biometrics & Face Proctoring ML Engine
+numpy>=1.24.0
+opencv-python-headless>=4.8.0,<5.0.0
+onnxruntime>=1.18.0
+torch>=2.2.0
+torchvision>=0.17.0
+deepface>=0.0.92

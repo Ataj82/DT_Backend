@@ -15,7 +15,14 @@ RUN set -eux; \
     . /etc/os-release; \
     echo "deb http://mirror.arvancloud.ir/debian ${VERSION_CODENAME} main contrib non-free non-free-firmware" > /etc/apt/sources.list; \
     echo "deb http://mirror.arvancloud.ir/debian ${VERSION_CODENAME}-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list; \
-    echo "deb http://mirror.arvancloud.ir/debian-security ${VERSION_CODENAME}-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+    echo "deb http://mirror.arvancloud.ir/debian-security ${VERSION_CODENAME}-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 # ---------------------------------------------------
 # PyPI Index Configuration (Official PyPI + Aliyun Fallback)
 # ---------------------------------------------------

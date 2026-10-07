@@ -169,26 +169,36 @@ class TelemetryHistoryResponse(BaseModel):
 class StudentBiometricProfileStatus(BaseModel):
     user_id: str
     is_enrolled: bool = False
+    face_enrolled: bool = False
     is_gaze_calibrated: bool = False
+    gaze_calibrated: bool = False
     is_neutral_calibrated: bool = False
+    neutral_calibrated: bool = False
+    ready_for_exam: bool = False
+    last_updated: Optional[str] = None
     last_calibrated_at: Optional[str] = None
     profile_details: Optional[Dict[str, Any]] = None
 
 
 class ExamDistractionLogRequest(BaseModel):
-    session_id: str
+    session_id: Optional[str] = None
     user_id: str
-    timestamp: Optional[float] = None
-    attention_score: float
-    gaze_direction: str
+    timestamp: Optional[Any] = None
+    attention_score: float = 0.0
+    gaze_direction: str = "Unfocused"
+    dominant_emotion: Optional[str] = "neutral"
+    stress_score: Optional[float] = 0.0
     pitch: float = 0.0
     yaw: float = 0.0
     duration_seconds: float = 2.0
+    details: Optional[Dict[str, Any]] = None
     notes: Optional[str] = "Looked away from screen"
 
 
 class ExamDistractionLogResponse(BaseModel):
-    status: str = "logged"
+    status: str = "recorded"
     session_id: str
-    user_id: str
-    total_distractions_count: int
+    user_id: Optional[str] = None
+    total_distractions: Optional[int] = 0
+    total_distractions_count: Optional[int] = 0
+    event: Optional[Dict[str, Any]] = None
