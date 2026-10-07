@@ -597,7 +597,7 @@ async def _sync_db_quizzes_to_pipeline(multiuser_service, framework, student_id_
             if default_lid not in lesson_ids:
                 lesson_ids.append(default_lid)
 
-            stmt_q = select(LessonQuiz).where(LessonQuiz.lesson_id.in_(lesson_ids), LessonQuiz.is_active == True)
+            stmt_q = select(LessonQuiz).where(LessonQuiz.lesson_id.in_(lesson_ids))
             res_q = await session.execute(stmt_q)
             db_quizzes = res_q.scalars().all()
 
@@ -656,7 +656,12 @@ async def _sync_db_quizzes_to_pipeline(multiuser_service, framework, student_id_
                         ends_at=q.end_at,
                         assignment_id=qid,
                     )
-                    assignment.status = AssignmentStatus.PUBLISHED
+                    assignment.status = AssignmentStatus.PUBLISHED if q.is_active is not False else AssignmentStatus.CLOSED
+                    if assignment.configuration_snapshot is None:
+                        assignment.configuration_snapshot = {}
+                    if q.exam_date:
+                        assignment.configuration_snapshot["exam_date"] = q.exam_date
+                    assignment.configuration_snapshot["gap_minutes"] = q.gap_minutes or 5
                     multiuser_service.repository.save_assignment(assignment)
 
                     s_ids = [str(s).strip() for s in (q.student_ids or []) if str(s).strip()]
@@ -1397,6 +1402,8 @@ async def update_exam(
         assignment.configuration_snapshot = {}
     if req.gap_minutes is not None:
         assignment.configuration_snapshot["gap_minutes"] = req.gap_minutes
+    if req.exam_date:
+        assignment.configuration_snapshot["exam_date"] = req.exam_date
 
     # Goals
     goals_data = None
@@ -1486,7 +1493,7 @@ async def update_exam(
     goal_model = framework.get_goal_model(assignment.goal_model_id)
     goals_resp = [_to_goal_response(g) for g in goal_model.goals] if goal_model else []
 
-    date_str = assignment.starts_at.strftime("%Y/%m/%d") if assignment.starts_at else "1405/07/20"
+    date_str = req.exam_date or (assignment.configuration_snapshot or {}).get("exam_date") or (assignment.starts_at.strftime("%Y/%m/%d") if assignment.starts_at else "1405/07/20")
 
     assignment_lang = (
         (assignment.configuration_snapshot or {}).get("language")

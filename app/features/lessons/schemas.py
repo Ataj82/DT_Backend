@@ -215,3 +215,24 @@ class QuizAttemptListResponse(BaseModel):
     is_completed: bool
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ========================= Quiz AI Explanation =========================
+class QuizExplainAnswerRequest(BaseModel):
+    question: str = Field(..., description="صورت سوال آزمون")
+    options: Optional[List[Union[str, dict[str, Any]]]] = Field(
+        default=None, description="لیست گزینه‌های سوال"
+    )
+    answer: Optional[Union[str, int]] = Field(
+        default=None, description="پاسخ صحیح سوال"
+    )
+    selected_answer: Optional[Union[str, int]] = Field(
+        default=None, description="پاسخ انتخابی دانشجو"
+    )
+    language: Optional[str] = Field(
+        default="fa", description="زبان تحلیل پاسخ (پیش‌فرض فارسی)"
+    )
+
+
+class QuizExplainAnswerResponse(BaseModel):
+    explanation: str = Field(..., description="شرح و تحلیل جامع سوال")

@@ -193,6 +193,13 @@ class StudentExamCardResponse(APIModel):
 
 
 class ExamUpdateRequest(APIModel):
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        use_enum_values=True,
+        extra="ignore",
+    )
+
     title: Optional[str] = None
     description: Optional[str] = None
     duration_minutes: Optional[int] = Field(default=None, ge=1, le=1440)

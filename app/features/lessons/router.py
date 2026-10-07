@@ -272,3 +272,105 @@ async def get_quiz_attempts(
     current_user: User = Depends(require_lesson_teacher),
 ):
     return await service.get_quiz_attempts(quiz_id)
+
+
+# ====================== Quiz AI Explanation ======================
+@router.post(
+    "/quizzes/explain-answer",
+    response_model=QuizExplainAnswerResponse,
+    summary="توضیح تحلیلی و جامع پاسخ سوال کوییز با هوش مصنوعی",
+)
+async def explain_quiz_answer(
+    payload: QuizExplainAnswerRequest,
+):
+    """
+    ارسال پرامپت آماده به سرور مدل زبانی (Qwen در http://94.184.177.171:8000/v1)
+    و تولید یک پاسخنامه تحلیلی و آموزشی جامع به زبان فارسی.
+    """
+    import asyncio
+    from app.features.exam_pipeline.llm.provider import LLMProvider
+    from app.features.exam_pipeline.configuration.llm_configuration import LLMConfiguration
+
+    # Build options text if available
+    options_text = ""
+    if payload.options and isinstance(payload.options, list):
+        formatted_list = []
+        labels = ["الف", "ب", "ج", "د", "هـ"]
+        for idx, opt in enumerate(payload.options):
+            lbl = labels[idx] if idx < len(labels) else f"گزینه {idx+1}"
+            if isinstance(opt, dict):
+                text = opt.get("text") or opt.get("answer") or str(opt)
+                formatted_list.append(f"{lbl}) {text}")
+            else:
+                formatted_list.append(f"{lbl}) {opt}")
+        options_text = "\n".join(formatted_list)
+
+    system_prompt = (
+        "شما یک استاد دانشگاه و متخصص آموزشی با تجربه و مسلط هستید.\n"
+        "وظیفه شما تحلیل دقیق و تشریحی سوال آزمون و ارائه یک پاسخنامه تحلیلی، مستدل، آموزنده و جامع به زبان فارسی است.\n"
+        "پاسخ باید ساختاریافته، بسیار روان، علمی و با رعایت نکات نگارشی فارسی باشد."
+    )
+
+    user_parts = [
+        "لطفاً سوال آزمون چهارگزینه‌ای زیر را به شکل کامل و جامع تشریح و تحلیل کنید:\n",
+        f"**صورت سوال:**\n{payload.question}\n",
+    ]
+
+    if options_text:
+        user_parts.append(f"**گزینه‌ها:**\n{options_text}\n")
+
+    if payload.answer is not None and str(payload.answer).strip():
+        user_parts.append(f"**پاسخ صحیح اعلام‌شده:** {payload.answer}\n")
+
+    if payload.selected_answer is not None and str(payload.selected_answer).strip():
+        user_parts.append(f"**پاسخ انتخابی دانشجو:** {payload.selected_answer}\n")
+
+    user_parts.append(
+        "لطفاً پاسخ را در قالبی کاملاً ساختاریافته و با عناوین زیر ارائه دهید:\n\n"
+        "۱. **پاسخ صحیح و استدلال علمی:**\n"
+        "گزینه یا پاسخ درست را مشخص کرده و منطق علمی و مستدل پشت آن را به طور کامل توضیح دهید.\n\n"
+        "۲. **تحلیل و رد سایر گزینه‌ها:**\n"
+        "سایر گزینه‌ها را به تفکیک بررسی کنید و علت نادرست بودن یا تله مفهومی آن‌ها را مشخص کنید.\n\n"
+        "۳. **نکته کلیدی آموزشی:**\n"
+        "یک جمع‌بندی مفهومی یا نکته مهم امتحانی مرتبط با این مبحث برای یادگیری عمیق‌تر ارائه دهید."
+    )
+
+    if (
+        payload.selected_answer is not None
+        and payload.answer is not None
+        and str(payload.selected_answer).strip() != str(payload.answer).strip()
+    ):
+        user_parts.append(
+            "\n۴. **علت اشتباه احتمالی دانشجو:**\n"
+            "دلیل انتخاب این گزینه نادرست توسط دانشجو و کج‌فهمی رایج در این زمینه را توضیح دهید."
+        )
+
+    user_prompt = "\n".join(user_parts)
+
+    try:
+        llm_cfg = LLMConfiguration.from_env()
+        # Set appropriate parameters for comprehensive analytical explanation
+        if llm_cfg.max_tokens < 1200:
+            llm_cfg = LLMConfiguration(
+                provider=llm_cfg.provider,
+                model=llm_cfg.model,
+                temperature=0.3,
+                max_tokens=1500,
+                timeout_seconds=30,
+                api_key=llm_cfg.api_key,
+                base_url=llm_cfg.base_url,
+            )
+
+        llm = LLMProvider(configuration=llm_cfg)
+        explanation = await asyncio.to_thread(
+            llm.chat,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        return QuizExplainAnswerResponse(explanation=explanation.strip())
+    except Exception as e:
+        return QuizExplainAnswerResponse(
+            explanation=f"در حال حاضر امکان دریافت تحلیل هوش مصنوعی وجود ندارد: {str(e)}"
+        )

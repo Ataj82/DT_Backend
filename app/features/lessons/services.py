@@ -301,6 +301,9 @@ class LessonService:
                     role=PipelineUserRole.PROFESSOR,
                 )
                 mu_svc.repository.save_user(prof)
+            elif prof.role != PipelineUserRole.PROFESSOR:
+                prof.role = PipelineUserRole.PROFESSOR
+                mu_svc.repository.save_user(prof)
 
             from app.features.exam_pipeline.knowledge.models import KnowledgeBase
 

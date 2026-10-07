@@ -243,3 +243,15 @@ async def student_unread_comments_summary_alias(
     return await get_student_unread_comments_summary(student_id, request=request, db=db)
 
 
+# Quiz Explain Answer Alias
+from app.features.lessons.schemas import QuizExplainAnswerRequest, QuizExplainAnswerResponse
+from app.features.lessons.router import explain_quiz_answer
+
+@app.post("/api/v1/quiz/explain-answer", response_model=QuizExplainAnswerResponse, tags=["Quizzes"])
+@app.post("/api/v1/quizzes/explain-answer", response_model=QuizExplainAnswerResponse, tags=["Quizzes"])
+async def quiz_explain_answer_alias(
+    payload: QuizExplainAnswerRequest,
+):
+    return await explain_quiz_answer(payload)
+
+
