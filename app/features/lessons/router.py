@@ -306,60 +306,43 @@ async def explain_quiz_answer(
         options_text = "\n".join(formatted_list)
 
     system_prompt = (
-        "شما یک استاد دانشگاه و متخصص آموزشی با تجربه و مسلط هستید.\n"
-        "وظیفه شما تحلیل دقیق و تشریحی سوال آزمون و ارائه یک پاسخنامه تحلیلی، مستدل، آموزنده و جامع به زبان فارسی است.\n"
-        "پاسخ باید ساختاریافته، بسیار روان، علمی و با رعایت نکات نگارشی فارسی باشد."
+        "شما یک استاد و مشاور آموزشی هستید. وظیفه شما ارائه تحلیلی بسیار کوتاه، روان و آموزنده برای سوال آزمون در حداکثر ۲ الی ۳ خط است.\n"
+        "قوانین اجباری:\n"
+        "۱. پاسخ باید حداکثر در ۲ الی ۳ خط کوتاه و مفید (حداکثر ۵۰ الی ۷۰ کلمه) باشد.\n"
+        "۲. در خط اول دلیل علمی و قطعی درستی گزینه صحیح را مشخص کن.\n"
+        "۳. در خط دوم نکته کلیدی آموزشی یا تفاوت آن با گزینه انتخابی را ذکر کن.\n"
+        "۴. از سلام، مقدمه‌چینی، نتیجه‌گیری‌های طولانی و بررسی جداگانه تک‌تک گزینه‌ها اکیداً خودداری کن.\n"
+        "۵. پاسخ باید کاملاً روان، علمی و به زبان فارسی باشد."
     )
 
-    user_parts = [
-        "لطفاً سوال آزمون چهارگزینه‌ای زیر را به شکل کامل و جامع تشریح و تحلیل کنید:\n",
-        f"**صورت سوال:**\n{payload.question}\n",
-    ]
+    user_parts = [f"سوال: {payload.question}"]
 
     if options_text:
-        user_parts.append(f"**گزینه‌ها:**\n{options_text}\n")
+        user_parts.append(f"گزینه‌ها:\n{options_text}")
 
     if payload.answer is not None and str(payload.answer).strip():
-        user_parts.append(f"**پاسخ صحیح اعلام‌شده:** {payload.answer}\n")
+        user_parts.append(f"پاسخ صحیح: {payload.answer}")
 
     if payload.selected_answer is not None and str(payload.selected_answer).strip():
-        user_parts.append(f"**پاسخ انتخابی دانشجو:** {payload.selected_answer}\n")
+        user_parts.append(f"پاسخ انتخابی کاربر: {payload.selected_answer}")
 
     user_parts.append(
-        "لطفاً پاسخ را در قالبی کاملاً ساختاریافته و با عناوین زیر ارائه دهید:\n\n"
-        "۱. **پاسخ صحیح و استدلال علمی:**\n"
-        "گزینه یا پاسخ درست را مشخص کرده و منطق علمی و مستدل پشت آن را به طور کامل توضیح دهید.\n\n"
-        "۲. **تحلیل و رد سایر گزینه‌ها:**\n"
-        "سایر گزینه‌ها را به تفکیک بررسی کنید و علت نادرست بودن یا تله مفهومی آن‌ها را مشخص کنید.\n\n"
-        "۳. **نکته کلیدی آموزشی:**\n"
-        "یک جمع‌بندی مفهومی یا نکته مهم امتحانی مرتبط با این مبحث برای یادگیری عمیق‌تر ارائه دهید."
+        "لطفاً در حداکثر ۲ الی ۳ خط کوتاه و مفید، دلیل درستی گزینه صحیح و نکته کلیدی را توضیح بده:"
     )
 
-    if (
-        payload.selected_answer is not None
-        and payload.answer is not None
-        and str(payload.selected_answer).strip() != str(payload.answer).strip()
-    ):
-        user_parts.append(
-            "\n۴. **علت اشتباه احتمالی دانشجو:**\n"
-            "دلیل انتخاب این گزینه نادرست توسط دانشجو و کج‌فهمی رایج در این زمینه را توضیح دهید."
-        )
-
-    user_prompt = "\n".join(user_parts)
+    user_prompt = "\n\n".join(user_parts)
 
     try:
         llm_cfg = LLMConfiguration.from_env()
-        # Set appropriate parameters for comprehensive analytical explanation
-        if llm_cfg.max_tokens < 1200:
-            llm_cfg = LLMConfiguration(
-                provider=llm_cfg.provider,
-                model=llm_cfg.model,
-                temperature=0.3,
-                max_tokens=1500,
-                timeout_seconds=30,
-                api_key=llm_cfg.api_key,
-                base_url=llm_cfg.base_url,
-            )
+        llm_cfg = LLMConfiguration(
+            provider=llm_cfg.provider,
+            model=llm_cfg.model,
+            temperature=0.2,
+            max_tokens=250,
+            timeout_seconds=45,
+            api_key=llm_cfg.api_key,
+            base_url=llm_cfg.base_url,
+        )
 
         llm = LLMProvider(configuration=llm_cfg)
         explanation = await asyncio.to_thread(
