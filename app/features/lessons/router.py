@@ -305,30 +305,80 @@ async def explain_quiz_answer(
                 formatted_list.append(f"{lbl}) {opt}")
         options_text = "\n".join(formatted_list)
 
-    system_prompt = (
-        "شما یک استاد و مشاور آموزشی هستید. وظیفه شما ارائه تحلیلی بسیار کوتاه، روان و آموزنده برای سوال آزمون در حداکثر ۲ الی ۳ خط است.\n"
-        "قوانین اجباری:\n"
-        "۱. پاسخ باید حداکثر در ۲ الی ۳ خط کوتاه و مفید (حداکثر ۵۰ الی ۷۰ کلمه) باشد.\n"
-        "۲. در خط اول دلیل علمی و قطعی درستی گزینه صحیح را مشخص کن.\n"
-        "۳. در خط دوم نکته کلیدی آموزشی یا تفاوت آن با گزینه انتخابی را ذکر کن.\n"
-        "۴. از سلام، مقدمه‌چینی، نتیجه‌گیری‌های طولانی و بررسی جداگانه تک‌تک گزینه‌ها اکیداً خودداری کن.\n"
-        "۵. پاسخ باید کاملاً روان، علمی و به زبان فارسی باشد."
-    )
+    # Determine if user selected an incorrect option
+    def check_is_incorrect(selected_val, correct_val, opts=None) -> bool:
+        if selected_val is None or correct_val is None:
+            return False
+        s = str(selected_val).strip()
+        a = str(correct_val).strip()
+        if not s or s.lower() in ["unanswered", "بی‌پاسخ", "none", "null", "undefined"]:
+            return False
+        if s.lower() == a.lower():
+            return False
 
-    user_parts = [f"سوال: {payload.question}"]
+        en_letters = ["a", "b", "c", "d", "e"]
+        fa_letters = ["الف", "ب", "ج", "د", "هـ"]
+        num_letters = ["1", "2", "3", "4", "5"]
 
-    if options_text:
-        user_parts.append(f"گزینه‌ها:\n{options_text}")
+        def get_index(v):
+            clean = str(v).lower().replace(")", "").replace(".", "").replace(":", "").replace("-", "").strip()
+            if clean in en_letters:
+                return en_letters.index(clean)
+            if clean in fa_letters:
+                return fa_letters.index(clean)
+            if clean in num_letters:
+                return num_letters.index(clean)
+            for idx, (en, fa, num) in enumerate(zip(en_letters, fa_letters, num_letters)):
+                if clean.startswith(f"گزینه {fa}") or clean.startswith(f"گزینه {num}") or clean.startswith(f"گزینه {en}"):
+                    return idx
+                if v.startswith(f"{en})") or v.startswith(f"{fa})") or v.startswith(f"{num})"):
+                    return idx
+            if opts and isinstance(opts, list):
+                for idx, opt in enumerate(opts):
+                    opt_str = ""
+                    if isinstance(opt, dict):
+                        opt_str = str(opt.get("text") or opt.get("answer") or "").strip().lower()
+                    else:
+                        opt_str = str(opt).strip().lower()
+                    if opt_str and (v.lower() == opt_str or opt_str in v.lower() or v.lower() in opt_str):
+                        return idx
+            return None
 
-    if payload.answer is not None and str(payload.answer).strip():
-        user_parts.append(f"پاسخ صحیح: {payload.answer}")
+        s_idx = get_index(s)
+        a_idx = get_index(a)
+        if s_idx is not None and a_idx is not None:
+            return s_idx != a_idx
+        return s.lower() != a.lower()
 
-    if payload.selected_answer is not None and str(payload.selected_answer).strip():
-        user_parts.append(f"پاسخ انتخابی کاربر: {payload.selected_answer}")
+    is_incorrect = check_is_incorrect(payload.selected_answer, payload.answer, payload.options)
 
-    user_parts.append(
-        "لطفاً در حداکثر ۲ الی ۳ خط کوتاه و مفید، دلیل درستی گزینه صحیح و نکته کلیدی را توضیح بده:"
-    )
+    if is_incorrect:
+        system_prompt = (
+            "شما یک استاد و تحلیل‌گر آزمون هستید. برای این سوال، فقط و فقط دو بخش زیر را بسیار صریح، کوتاه و علمی بنویس:\n"
+            "۱. استدلال علمی: دلیل علمی درستی گزینه صحیح در ۱ الی ۲ جمله کوتاه.\n"
+            "۲. علت اشتباه احتمالی: در ۱ جمله کوتاه توضیح بده چرا گزینه انتخابی کاربر نادرست است یا چه تله مفهومی وجود داشته است.\n"
+            "قوانین اکید: از هرگونه سلام، مقدمه‌چینی، بررسی سایر گزینه‌ها و بخش‌بندی‌های دیگر اکیداً خودداری کن."
+        )
+        user_parts = [f"صورت سوال: {payload.question}"]
+        if options_text:
+            user_parts.append(f"گزینه‌ها:\n{options_text}")
+        user_parts.append(f"گزینه صحیح: {payload.answer}")
+        user_parts.append(f"گزینه انتخابی اشتباه کاربر: {payload.selected_answer}")
+        user_parts.append(
+            "فقط استدلال علمی گزینه صحیح و در ادامه علت اشتباه احتمالی کاربر را بنویس:"
+        )
+    else:
+        system_prompt = (
+            "شما یک استاد و تحلیل‌گر آزمون هستید. تنها وظیفه شما بیان استدلال علمی درستی گزینه صحیح است.\n"
+            "قوانین اکید:\n"
+            "۱. فقط و فقط استدلال علمی درستی پاسخ صحیح را در ۱ الی ۲ جمله کوتاه، صریح و علمی بنویس.\n"
+            "۲. از نوشتن هرگونه بخش دیگری (مانند مقدمه، سلام، بررسی سایر گزینه‌ها، علت اشتباه یا نکات اضافی) اکیداً خودداری کن."
+        )
+        user_parts = [f"صورت سوال: {payload.question}"]
+        if options_text:
+            user_parts.append(f"گزینه‌ها:\n{options_text}")
+        user_parts.append(f"گزینه صحیح: {payload.answer}")
+        user_parts.append("فقط استدلال علمی درستی گزینه صحیح را بنویس:")
 
     user_prompt = "\n\n".join(user_parts)
 
