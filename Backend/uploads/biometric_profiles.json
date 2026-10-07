@@ -1,0 +1,11 @@
+{
+  "vectors": {},
+  "profiles": {
+    "test_student": {
+      "is_enrolled": false,
+      "is_gaze_calibrated": true,
+      "is_neutral_calibrated": true,
+      "face_enrolled": true
+    }
+  }
+}
