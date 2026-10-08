@@ -360,7 +360,8 @@ def analyze_comprehensive_biometrics(
 
     # 5. Check if demographics (Age, Gender, Race) need to be evaluated or pulled from cache
     cached_demo = _DEMOGRAPHICS_CACHE.get(uid)
-    need_demographics = (cached_demo is None)
+    # Never block live telemetry on heavy external model downloads (sub-20ms guarantee)
+    need_demographics = False
 
     if need_demographics and DeepFace is not None:
         try:

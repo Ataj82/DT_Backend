@@ -184,6 +184,22 @@ def process_live_frame(
                     pass
 
         if not face_objs:
+            # Fallback: direct OpenCV cascade detection
+            try:
+                from .attention import _FACE_CASCADE, _PROFILE_CASCADE
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                min_sz = (int(img.shape[1] * 0.10), int(img.shape[0] * 0.10))
+                faces = _FACE_CASCADE.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=min_sz) if _FACE_CASCADE else []
+                if len(faces) == 0 and _PROFILE_CASCADE:
+                    faces = _PROFILE_CASCADE.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=3, minSize=min_sz)
+                if len(faces) > 0:
+                    fx, fy, fw, fh = max(faces, key=lambda b: b[2] * b[3])
+                    face_objs = [{"facial_area": {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}}]
+                    chosen_detector = "opencv"
+            except Exception:
+                pass
+
+        if not face_objs:
             return None, "No face detected in the frame. Please look directly at the camera.", {}
 
         face_data = face_objs[0]
@@ -204,12 +220,35 @@ def process_live_frame(
             return None, liveness_msg, liveness_details
 
         # Step 3: ArcFace 512-d feature extraction
-        reps = DeepFace.represent(
-            img_path=img,
-            model_name="ArcFace",
-            detector_backend=chosen_detector,
-            enforce_detection=False
-        )
+        reps = None
+        try:
+            reps = DeepFace.represent(
+                img_path=img,
+                model_name="ArcFace",
+                detector_backend=chosen_detector if chosen_detector in ("opencv", "ssd", "retinaface", "mtcnn") else "opencv",
+                enforce_detection=False
+            )
+        except Exception:
+            pass
+
+        if not reps:
+            # Crop facial region directly and represent with detector_backend="skip"
+            fx, fy, fw, fh = facial_tuple
+            y1 = max(0, fy)
+            y2 = min(img.shape[0], fy + fh)
+            x1 = max(0, fx)
+            x2 = min(img.shape[1], fx + fw)
+            face_crop = img[y1:y2, x1:x2]
+            if face_crop.size > 0:
+                try:
+                    reps = DeepFace.represent(
+                        img_path=face_crop,
+                        model_name="ArcFace",
+                        detector_backend="skip",
+                        enforce_detection=False
+                    )
+                except Exception:
+                    pass
 
         if not reps:
             return None, "Failed to extract face embedding representation.", liveness_details
