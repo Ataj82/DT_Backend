@@ -9,7 +9,8 @@ try:
     from deepface.models.spoofing.FasNetUtils import crop
     from deepface.models.spoofing.pytorch.FasNet import Compose, ToTensor
     HAS_DEEPFACE = True
-except ImportError:
+except Exception as e:
+    print(f"[biometrics] Warning: DeepFace import skipped: {e}")
     torch = None
     F = None
     DeepFace = None
@@ -149,7 +150,7 @@ def evaluate_liveness(img: np.ndarray, facial_area: tuple, mode: str = "balanced
 
 def process_live_frame(
     img: np.ndarray, 
-    detector: str = "ssd", 
+    detector: str = "opencv", 
     liveness_mode: str = "balanced"
 ) -> tuple[list | None, str | None, dict]:
     """
@@ -163,7 +164,7 @@ def process_live_frame(
     try:
         # Step 1: Detect face (prefer requested detector, fallback to opencv if needed)
         face_objs = None
-        chosen_detector = detector or "ssd"
+        chosen_detector = detector or "opencv"
         try:
             face_objs = DeepFace.extract_faces(
                 img_path=img,

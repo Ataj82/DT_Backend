@@ -42,6 +42,6 @@ COSINE_THRESHOLD = float(os.getenv("COSINE_THRESHOLD", "0.65"))
 
 # Telemetry Defaults
 DEFAULT_LIVENESS_MODE = os.getenv("DEFAULT_LIVENESS_MODE", "balanced")
-DEFAULT_DETECTOR = os.getenv("DEFAULT_DETECTOR", "ssd")
+DEFAULT_DETECTOR = os.getenv("DEFAULT_DETECTOR", "opencv")
 DEFAULT_TELEMETRY_FPS = float(os.getenv("DEFAULT_TELEMETRY_FPS", "2.0"))
 CPU_EXECUTION_THREADS = int(os.getenv("CPU_EXECUTION_THREADS", "4"))
