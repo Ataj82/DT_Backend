@@ -184,20 +184,48 @@ def process_live_frame(
                     pass
 
         if not face_objs:
-            # Fallback: direct OpenCV cascade detection
+            # Multi-strategy OpenCV Cascade fallback with histogram equalization
             try:
                 from .attention import _FACE_CASCADE, _PROFILE_CASCADE
+                cascades = []
+                if _FACE_CASCADE:
+                    cascades.append(_FACE_CASCADE)
+                if _PROFILE_CASCADE:
+                    cascades.append(_PROFILE_CASCADE)
+                try:
+                    if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
+                        default_p = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                        c_def = cv2.CascadeClassifier(default_p)
+                        if not c_def.empty():
+                            cascades.append(c_def)
+                except Exception:
+                    pass
+
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                min_sz = (int(img.shape[1] * 0.10), int(img.shape[0] * 0.10))
-                faces = _FACE_CASCADE.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=min_sz) if _FACE_CASCADE else []
-                if len(faces) == 0 and _PROFILE_CASCADE:
-                    faces = _PROFILE_CASCADE.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=3, minSize=min_sz)
-                if len(faces) > 0:
-                    fx, fy, fw, fh = max(faces, key=lambda b: b[2] * b[3])
-                    face_objs = [{"facial_area": {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}}]
-                    chosen_detector = "opencv"
-            except Exception:
-                pass
+                # Try raw grayscale first, then histogram-equalized (crucial for webcam shadows/backlighting)
+                for g_img in (gray, cv2.equalizeHist(gray)):
+                    for cascade in cascades:
+                        for s_factor in (1.1, 1.06):
+                            for m_neigh in (3, 2):
+                                faces = cascade.detectMultiScale(
+                                    g_img,
+                                    scaleFactor=s_factor,
+                                    minNeighbors=m_neigh,
+                                    minSize=(28, 28)
+                                )
+                                if len(faces) > 0:
+                                    fx, fy, fw, fh = max(faces, key=lambda b: b[2] * b[3])
+                                    face_objs = [{"facial_area": {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}}]
+                                    chosen_detector = "opencv"
+                                    break
+                            if face_objs:
+                                break
+                        if face_objs:
+                            break
+                    if face_objs:
+                        break
+            except Exception as e:
+                print(f"[biometrics] Cascade detection fallback error: {e}")
 
         if not face_objs:
             return None, "No face detected in the frame. Please look directly at the camera.", {}
