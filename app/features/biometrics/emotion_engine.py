@@ -179,6 +179,13 @@ class NeutralBaselineCalibrator:
         self.sigma_baseline = (np.std(feature_observations, axis=0) + 1.0e-4).astype(np.float32)
         self.is_calibrated = True
 
+    def load_persisted_baseline(self, mu: list, sigma: list) -> None:
+        """Restores a pre-computed neutral baseline from persistent storage."""
+        if mu is not None and sigma is not None and len(mu) > 0 and len(sigma) > 0:
+            self.mu_baseline = np.array(mu, dtype=np.float32)
+            self.sigma_baseline = np.array(sigma, dtype=np.float32)
+            self.is_calibrated = True
+
     def process_calibration_frame(self, feature_vector: np.ndarray, timestamp: float) -> bool:
         """
         Accumulates baseline samples during the calibration window.
@@ -384,6 +391,10 @@ class BiometricAffectEngine:
         """Resets the personalized neutral baseline and primes the filters."""
         self.calibrator.reset()
         self.is_filter_primed = False
+
+    def load_persisted_baseline(self, mu: list, sigma: list) -> None:
+        """Restores a pre-computed neutral baseline from persistent storage."""
+        self.calibrator.load_persisted_baseline(mu, sigma)
 
     def _resolve_action_units(
         self,
@@ -692,6 +703,7 @@ def reset_affect_engine(user_id: Optional[str] = None) -> None:
     uid = user_id.strip() if user_id and user_id.strip() else "default"
     if uid in _USER_AFFECT_ENGINES:
         _USER_AFFECT_ENGINES[uid].reset_baseline()
+        del _USER_AFFECT_ENGINES[uid]
 
 def calibrate_user_neutral_baseline(
     user_id: str,

@@ -31,11 +31,6 @@ DB_FILE = os.getenv(
     str(UPLOADS_DIR / "stress_telemetry.db")
 )
 
-# Persistent Biometric Profiles Storage (in Backend/uploads/)
-PROFILES_STORE_FILE = os.getenv(
-    "BIOMETRIC_PROFILES_FILE",
-    str(UPLOADS_DIR / "biometric_profiles.json")
-)
 
 # ArcFace Verification Parameters
 COSINE_THRESHOLD = float(os.getenv("COSINE_THRESHOLD", "0.65"))

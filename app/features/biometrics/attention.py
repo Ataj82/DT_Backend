@@ -158,6 +158,14 @@ class PersonalizedGazeCalibrator:
         except Exception:
             return False
 
+    def load_persisted_weights(self, weights: list, samples_count: int = 5, calibrated_at: float | None = None) -> None:
+        """Restores pre-computed polynomial regression weights from persistent storage."""
+        if weights is not None:
+            self.weights = np.array(weights, dtype=np.float64)
+            self.is_calibrated = True
+            self.samples_count = samples_count
+            self.calibrated_at = calibrated_at or time.time()
+
     def predict(self, feature_vector: np.ndarray) -> tuple[float, float]:
         if not self.is_calibrated or self.weights is None:
             return 0.5, 0.5

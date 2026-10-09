@@ -86,9 +86,9 @@ class CalibrationStatusResponse(BaseModel):
 
 class NeutralCalibrationPayload(BaseModel):
     user_id: str
-    samples: List[List[float]] = Field(
-        ...,
-        description="List of 7D resting feature vectors [V, A, AU1, AU2, AU4, AU12, AU15]"
+    samples: Optional[List[List[float]]] = Field(
+        default=None,
+        description="Optional list of 7D resting feature vectors. If empty or omitted, server loads from Redis session buffer."
     )
 
 
@@ -175,9 +175,22 @@ class StudentBiometricProfileStatus(BaseModel):
     is_neutral_calibrated: bool = False
     neutral_calibrated: bool = False
     ready_for_exam: bool = False
+    can_edit: bool = True
+    is_fully_registered: bool = False
     last_updated: Optional[str] = None
     last_calibrated_at: Optional[str] = None
     profile_details: Optional[Dict[str, Any]] = None
+
+
+class BiometricEditPermissionRequest(BaseModel):
+    can_edit: bool
+
+
+class BiometricResetResponse(BaseModel):
+    status: str
+    message: str
+    user_id: str
+    can_edit: bool
 
 
 class ExamDistractionLogRequest(BaseModel):

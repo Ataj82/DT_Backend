@@ -116,6 +116,7 @@ async def startup_event():
         import app.features.chat.models
         import app.features.lessons.models
         import app.features.auth.models
+        import app.features.biometrics.db_models
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         print("[startup] Database schema verified/created successfully.")

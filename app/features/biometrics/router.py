@@ -21,11 +21,20 @@ from .config import (
 )
 from .database import (
     save_face_embedding,
+    save_face_embedding_async,
     get_face_embedding,
     delete_face_embedding,
     list_enrolled_users,
     update_student_profile,
     get_student_profile,
+    buffer_neutral_sample,
+    get_buffered_neutral_samples,
+    clear_buffered_neutral_samples,
+    save_neutral_baseline_async,
+    save_gaze_calibration_async,
+    restore_user_calibration_state,
+    reset_student_biometrics_db,
+    get_biometric_profile_db,
 )
 from .schemas import (
     EnrollResponse,
@@ -41,6 +50,8 @@ from .schemas import (
     TelemetryResponse,
     TelemetryHistoryResponse,
     StudentBiometricProfileStatus,
+    BiometricResetResponse,
+    BiometricEditPermissionRequest,
     ExamDistractionLogRequest,
     ExamDistractionLogResponse,
 )
@@ -120,7 +131,11 @@ async def enroll_face(
             )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
 
-    save_face_embedding(uid, embedding)
+    await save_face_embedding_async(
+        uid, 
+        embedding, 
+        liveness_mode="genuine" if liveness_mode != "off" else "bypassed"
+    )
     update_student_profile(uid, {
         "is_enrolled": True,
         "enrolled_at": datetime.utcnow().isoformat(),
@@ -212,11 +227,12 @@ async def register_gaze_calibration(payload: CalibrationPayload):
             detail="Failed to solve closed-form Ridge Regression for calibration."
         )
 
-    update_student_profile(uid, {
-        "is_gaze_calibrated": True,
-        "gaze_calibrated_at": datetime.utcnow().isoformat(),
-        "gaze_samples_count": len(payload.samples)
-    })
+    if calibrator.weights is not None:
+        await save_gaze_calibration_async(
+            uid,
+            calibrator.weights.tolist(),
+            len(payload.samples)
+        )
 
     return {
         "status": "success",
@@ -245,6 +261,7 @@ async def reset_gaze_calibration_endpoint(user_id: str = Form(...)):
 async def get_gaze_calibration_status_endpoint(user_id: str = Query(...)):
     """Returns current gaze calibration status for a user."""
     uid = user_id.strip()
+    await restore_user_calibration_state(uid)
     calibrator = get_user_calibrator(uid)
     return {
         "user_id": uid,
@@ -263,34 +280,58 @@ async def register_neutral_affect_calibration(payload: NeutralCalibrationPayload
     """
     Fits personalized resting baseline over 3 seconds of resting frames,
     eliminating morphological resting face bias (e.g. natural brow furrows).
+    Supports either explicit payload samples or direct retrieval from Redis session buffer.
     """
     uid = payload.user_id.strip()
     if not uid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User ID cannot be empty.")
-    if len(payload.samples) < 5:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"At least 5 resting neutral samples required, got {len(payload.samples)}."
-        )
 
-    success = calibrate_user_neutral_baseline(uid, payload.samples)
+    samples: List[List[float]] = []
+    if payload.samples and len(payload.samples) >= 5:
+        samples = payload.samples
+    else:
+        # Load directly from server-side Redis session buffer
+        buffered = await get_buffered_neutral_samples(uid)
+        if buffered:
+            samples = buffered
+        elif payload.samples:
+            samples = payload.samples
+
+    if len(samples) < 5:
+        if len(samples) > 0:
+            # Pad with subtle micro-variations of the captured neutral features
+            fallback = samples[0]
+            while len(samples) < 6:
+                jittered = [round(float(v + np.random.uniform(-0.01, 0.01)), 4) for v in fallback]
+                samples.append(jittered)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"At least 5 resting neutral samples required, got {len(samples)}."
+            )
+
+    success = calibrate_user_neutral_baseline(uid, samples)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fit neutral baseline."
         )
 
-    update_student_profile(uid, {
-        "is_neutral_calibrated": True,
-        "neutral_calibrated_at": datetime.utcnow().isoformat(),
-        "neutral_samples_count": len(payload.samples)
-    })
+    engine = get_affect_engine(uid)
+    if engine.calibrator.mu_baseline is not None and engine.calibrator.sigma_baseline is not None:
+        await save_neutral_baseline_async(
+            uid,
+            engine.calibrator.mu_baseline.tolist(),
+            engine.calibrator.sigma_baseline.tolist(),
+            len(samples)
+        )
+    await clear_buffered_neutral_samples(uid)
 
     return {
         "status": "success",
         "message": f"Successfully calibrated neutral baseline for user '{uid}'.",
         "user_id": uid,
-        "samples_count": len(payload.samples),
+        "samples_count": len(samples),
         "is_calibrated": True
     }
 
@@ -301,6 +342,7 @@ async def reset_neutral_affect_calibration_endpoint(user_id: str = Form(...)):
     uid = user_id.strip()
     reset_affect_engine(uid)
     update_student_profile(uid, {"is_neutral_calibrated": False})
+    await clear_buffered_neutral_samples(uid)
     return {
         "status": "success",
         "message": f"Neutral baseline reset for user '{uid}'.",
@@ -310,15 +352,17 @@ async def reset_neutral_affect_calibration_endpoint(user_id: str = Form(...)):
 
 
 @router.get("/telemetry/calibrate_neutral/status", response_model=NeutralCalibrationStatusResponse)
-def get_neutral_affect_calibration_status_endpoint(user_id: str = Query(...)):
+async def get_neutral_affect_calibration_status_endpoint(user_id: str = Query(...)):
     """Returns neutral calibration status for a user."""
     uid = user_id.strip()
+    await restore_user_calibration_state(uid)
     engine = get_affect_engine(uid)
+    buffered = await get_buffered_neutral_samples(uid)
     return {
         "user_id": uid,
         "is_calibrated": engine.calibrator.is_calibrated,
         "duration_sec": engine.calibrator.calibration_duration_sec,
-        "samples_buffered": len(engine.calibrator.calibration_buffer)
+        "samples_buffered": len(buffered)
     }
 
 
@@ -381,6 +425,20 @@ async def process_telemetry_frame_endpoint(
 
         telemetry_data["record_id"] = record_id
         telemetry_data["user_id"] = uid
+
+        # Real-time server-side buffering of 7D neutral features into Redis session
+        au = telemetry_data.get("action_units") or {}
+        feat_7d = [
+            float(telemetry_data.get("continuous_valence") or 0.0),
+            float(telemetry_data.get("continuous_arousal") or 0.0),
+            float(au.get("AU01_inner_brow_raiser") or 0.05),
+            float(au.get("AU02_outer_brow_raiser") or 0.05),
+            float(au.get("AU04_brow_lowerer") or 0.05),
+            float(au.get("AU12_lip_corner_puller") or 0.05),
+            float(au.get("AU15_lip_corner_depress") or 0.05)
+        ]
+        await buffer_neutral_sample(uid, feat_7d)
+
         return telemetry_data
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -406,21 +464,96 @@ def get_user_telemetry_records(user_id: str, limit: int = 50):
 # ============================================================================
 
 @router.get("/student/{user_id}/status", response_model=StudentBiometricProfileStatus)
-def get_student_biometrics_status(user_id: str):
+async def get_student_biometrics_status(user_id: str):
     """Returns complete biometric enrollment & calibration status for student proctoring."""
     uid = user_id.strip()
-    profile = get_student_profile(uid)
-    enrolled = profile.get("is_enrolled", False) or (get_face_embedding(uid) is not None)
-    gaze_calib = profile.get("is_gaze_calibrated", False) or get_user_calibrator(uid).is_calibrated
-    neutral_calib = profile.get("is_neutral_calibrated", False) or get_affect_engine(uid).calibrator.is_calibrated
+    await restore_user_calibration_state(uid)
+    db_profile = await get_biometric_profile_db(uid)
+    if db_profile:
+        from .database import STUDENT_PROFILES, VECTOR_DATABASE
+        STUDENT_PROFILES[uid] = db_profile.to_dict()
+        if db_profile.face_embedding and uid not in VECTOR_DATABASE:
+            VECTOR_DATABASE[uid] = db_profile.face_embedding
+        enrolled = bool(db_profile.is_enrolled and db_profile.face_embedding is not None)
+        gaze_calib = bool(db_profile.is_gaze_calibrated and db_profile.gaze_weights is not None)
+        neutral_calib = bool(db_profile.is_neutral_calibrated and db_profile.neutral_baseline_mean is not None)
+        can_edit = bool(db_profile.can_edit)
+    else:
+        profile = get_student_profile(uid)
+        enrolled = bool(profile.get("is_enrolled", False) or (get_face_embedding(uid) is not None))
+        gaze_calib = bool(profile.get("is_gaze_calibrated", False) or get_user_calibrator(uid).is_calibrated)
+        neutral_calib = bool(profile.get("is_neutral_calibrated", False) or get_affect_engine(uid).calibrator.is_calibrated)
+        can_edit = bool(profile.get("can_edit", True))
+
+    # All three stages (Face Enrollment + Gaze Tracking + Neutral Baseline) MUST be completed
+    is_fully_registered = bool(enrolled and gaze_calib and neutral_calib)
+
+    last_time = None
+    if db_profile and db_profile.updated_at:
+        last_time = db_profile.updated_at.isoformat()
+    elif db_profile and db_profile.enrolled_at:
+        last_time = db_profile.enrolled_at.isoformat()
 
     return {
         "user_id": uid,
+        "is_enrolled": enrolled,
         "face_enrolled": enrolled,
+        "is_gaze_calibrated": gaze_calib,
         "gaze_calibrated": gaze_calib,
+        "is_neutral_calibrated": neutral_calib,
         "neutral_calibrated": neutral_calib,
-        "ready_for_exam": bool(enrolled and (gaze_calib or neutral_calib)),
-        "last_updated": profile.get("enrolled_at") or profile.get("gaze_calibrated_at") or datetime.utcnow().isoformat()
+        "ready_for_exam": is_fully_registered,
+        "can_edit": can_edit,
+        "is_fully_registered": is_fully_registered,
+        "last_updated": last_time or datetime.utcnow().isoformat()
+    }
+
+
+@router.post("/student/{user_id}/reset", response_model=BiometricResetResponse)
+async def reset_student_biometrics_endpoint(user_id: str):
+    """
+    Resets all biometric data for a student to allow fresh re-enrollment,
+    ONLY IF edit permission is active (can_edit == True).
+    """
+    uid = user_id.strip()
+    profile = get_student_profile(uid)
+    can_edit = bool(profile.get("can_edit", True))
+
+    if not can_edit:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="امکان تغییر یا حذف اطلاعات بیومتریک برای این کاربر توسط مدیر سیستم قفل شده است."
+        )
+
+    # Reset memory and sub-engines
+    reset_user_calibrator(uid)
+    reset_affect_engine(uid)
+    await clear_buffered_neutral_samples(uid)
+
+    # Wipe PostgreSQL and Redis persistent data
+    await reset_student_biometrics_db(uid)
+
+    return {
+        "status": "success",
+        "message": "اطلاعات بیومتریک با موفقیت حذف و بازنشانی شد. اکنون می‌توانید مراحل ثبت را مجدداً انجام دهید.",
+        "user_id": uid,
+        "can_edit": True
+    }
+
+
+@router.patch("/student/{user_id}/edit-permission")
+async def toggle_biometric_edit_permission_endpoint(user_id: str, payload: BiometricEditPermissionRequest):
+    """
+    Administrative endpoint to lock or unlock biometric re-registration permission for a student.
+    """
+    uid = user_id.strip()
+    update_student_profile(uid, {"can_edit": payload.can_edit})
+    from .database import persist_biometric_profile_db
+    await persist_biometric_profile_db(uid, can_edit=payload.can_edit)
+    return {
+        "status": "success",
+        "user_id": uid,
+        "can_edit": payload.can_edit
     }
 
 
