@@ -29,14 +29,12 @@ RUN set -eux; \
     ; \
     rm -rf /var/lib/apt/lists/*
 # ---------------------------------------------------
-# PyPI Index Configuration (Official PyPI + Aliyun Fallback)
+# PyPI Index Configuration
 # ---------------------------------------------------
 ARG PIP_INDEX_URL=https://pypi.org/simple
-ARG PIP_EXTRA_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 ENV PIP_INDEX_URL=${PIP_INDEX_URL}
-ENV PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
-ENV PIP_DEFAULT_TIMEOUT=180
-ENV PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org mirrors.aliyun.com download.pytorch.org"
+ENV PIP_DEFAULT_TIMEOUT=60
+ENV PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org download.pytorch.org"
 
 # Copy only requirements first to cache the pip install step
 COPY requirements.txt .

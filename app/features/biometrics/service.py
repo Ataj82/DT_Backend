@@ -148,6 +148,72 @@ def evaluate_liveness(img: np.ndarray, facial_area: tuple, mode: str = "balanced
         else:
             return False, f"Spoof attempt detected (screen/photo/paper: {spoof_p:.1%}, real: {real_p:.1%})", probs
 
+def _detect_single_frame_face(test_img: np.ndarray, preferred_detector: str = "opencv"):
+    face_objs = None
+    chosen_detector = preferred_detector or "opencv"
+    try:
+        face_objs = DeepFace.extract_faces(
+            img_path=test_img,
+            detector_backend=chosen_detector,
+            enforce_detection=True
+        )
+    except Exception:
+        if chosen_detector != "opencv":
+            try:
+                face_objs = DeepFace.extract_faces(
+                    img_path=test_img,
+                    detector_backend="opencv",
+                    enforce_detection=True
+                )
+                chosen_detector = "opencv"
+            except Exception:
+                pass
+
+    if not face_objs:
+        # Multi-strategy OpenCV Cascade fallback with histogram equalization & CLAHE
+        try:
+            from .attention import _FACE_CASCADE, _PROFILE_CASCADE
+            cascades = []
+            if _FACE_CASCADE:
+                cascades.append(_FACE_CASCADE)
+            if _PROFILE_CASCADE:
+                cascades.append(_PROFILE_CASCADE)
+            try:
+                if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
+                    default_p = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                    c_def = cv2.CascadeClassifier(default_p)
+                    if not c_def.empty():
+                        cascades.append(c_def)
+            except Exception:
+                pass
+
+            gray = cv2.cvtColor(test_img, cv2.COLOR_BGR2GRAY)
+            # Try raw grayscale, histogram-equalized, and CLAHE adaptive equalization
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray_clahe = clahe.apply(gray)
+            gray_eq = cv2.equalizeHist(gray)
+            gray_flipped = cv2.flip(gray, 1)
+
+            for g_img in (gray, gray_clahe, gray_eq, gray_flipped):
+                for cascade in cascades:
+                    for s_factor in (1.05, 1.1, 1.15):
+                        for m_neigh in (2, 3):
+                            faces = cascade.detectMultiScale(
+                                g_img,
+                                scaleFactor=s_factor,
+                                minNeighbors=m_neigh,
+                                minSize=(24, 24)
+                            )
+                            if len(faces) > 0:
+                                fx, fy, fw, fh = max(faces, key=lambda b: b[2] * b[3])
+                                face_objs = [{"facial_area": {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}}]
+                                chosen_detector = "opencv"
+                                return face_objs, chosen_detector
+        except Exception as e:
+            print(f"[biometrics] Cascade detection fallback error: {e}")
+
+    return face_objs, chosen_detector
+
 def process_live_frame(
     img: np.ndarray, 
     detector: str = "opencv", 
@@ -155,77 +221,29 @@ def process_live_frame(
 ) -> tuple[list | None, str | None, dict]:
     """
     Two-stage face authentication pipeline:
-    1. Detects face and runs configurable MiniFASNet passive liveness detection.
-    2. Extracts ArcFace 512-dimensional embedding for genuine faces.
+    1. Multi-orientation (0°, 90°, 270°, 180°) face detection with CLAHE & Haar cascade fallbacks.
+    2. Configurable MiniFASNet passive anti-spoofing verification.
+    3. ArcFace 512-dimensional embedding extraction on genuine upright face.
     
     Returns:
         tuple (embedding: list | None, error_message: str | None, details: dict)
     """
     try:
-        # Step 1: Detect face (prefer requested detector, fallback to opencv if needed)
+        # Step 1: Detect face across orientations (critical for mobile portrait vs landscape camera sensors)
+        orientations = [
+            (0, img),
+            (90, cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)),
+            (270, cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)),
+            (180, cv2.rotate(img, cv2.ROTATE_180)),
+        ]
+
         face_objs = None
         chosen_detector = detector or "opencv"
-        try:
-            face_objs = DeepFace.extract_faces(
-                img_path=img,
-                detector_backend=chosen_detector,
-                enforce_detection=True
-            )
-        except Exception:
-            if chosen_detector != "opencv":
-                try:
-                    face_objs = DeepFace.extract_faces(
-                        img_path=img,
-                        detector_backend="opencv",
-                        enforce_detection=True
-                    )
-                    chosen_detector = "opencv"
-                except Exception:
-                    pass
-
-        if not face_objs:
-            # Multi-strategy OpenCV Cascade fallback with histogram equalization
-            try:
-                from .attention import _FACE_CASCADE, _PROFILE_CASCADE
-                cascades = []
-                if _FACE_CASCADE:
-                    cascades.append(_FACE_CASCADE)
-                if _PROFILE_CASCADE:
-                    cascades.append(_PROFILE_CASCADE)
-                try:
-                    if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
-                        default_p = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-                        c_def = cv2.CascadeClassifier(default_p)
-                        if not c_def.empty():
-                            cascades.append(c_def)
-                except Exception:
-                    pass
-
-                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                # Try raw grayscale first, then histogram-equalized (crucial for webcam shadows/backlighting)
-                for g_img in (gray, cv2.equalizeHist(gray)):
-                    for cascade in cascades:
-                        for s_factor in (1.1, 1.06):
-                            for m_neigh in (3, 2):
-                                faces = cascade.detectMultiScale(
-                                    g_img,
-                                    scaleFactor=s_factor,
-                                    minNeighbors=m_neigh,
-                                    minSize=(28, 28)
-                                )
-                                if len(faces) > 0:
-                                    fx, fy, fw, fh = max(faces, key=lambda b: b[2] * b[3])
-                                    face_objs = [{"facial_area": {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}}]
-                                    chosen_detector = "opencv"
-                                    break
-                            if face_objs:
-                                break
-                        if face_objs:
-                            break
-                    if face_objs:
-                        break
-            except Exception as e:
-                print(f"[biometrics] Cascade detection fallback error: {e}")
+        for rot_deg, rot_img in orientations:
+            face_objs, chosen_detector = _detect_single_frame_face(rot_img, preferred_detector=detector)
+            if face_objs:
+                img = rot_img  # Operate on the verified upright image for liveness and embeddings!
+                break
 
         if not face_objs:
             return None, "No face detected in the frame. Please look directly at the camera.", {}
