@@ -157,7 +157,7 @@ async def persist_biometric_profile_db(user_id: str, **kwargs) -> Optional[UserB
 
 
 async def get_biometric_profile_db(user_id: str) -> Optional[UserBiometricProfile]:
-    """Queries persistent biometric profile directly from PostgreSQL."""
+    """Queries persistent biometric profile directly from PostgreSQL with UUID/username resolution."""
     session_factory = _get_async_session()
     if not session_factory:
         return None
@@ -166,7 +166,36 @@ async def get_biometric_profile_db(user_id: str) -> Optional[UserBiometricProfil
         async with session_factory() as session:
             stmt = select(UserBiometricProfile).where(UserBiometricProfile.user_id == uid)
             result = await session.execute(stmt)
-            return result.scalar_one_or_none()
+            profile = result.scalar_one_or_none()
+            if profile:
+                return profile
+
+            # Cross-reference with users table (UUID <-> username)
+            from app.features.users.models import User
+            from uuid import UUID
+            try:
+                parsed_uuid = UUID(uid)
+                u_stmt = select(User).where(User.user_id == parsed_uuid)
+                u_res = await session.execute(u_stmt)
+                u_obj = u_res.scalar_one_or_none()
+                if u_obj and u_obj.username:
+                    stmt2 = select(UserBiometricProfile).where(UserBiometricProfile.user_id == u_obj.username)
+                    res2 = await session.execute(stmt2)
+                    p2 = res2.scalar_one_or_none()
+                    if p2:
+                        return p2
+            except ValueError:
+                u_stmt = select(User).where(User.username == uid)
+                u_res = await session.execute(u_stmt)
+                u_obj = u_res.scalar_one_or_none()
+                if u_obj:
+                    stmt2 = select(UserBiometricProfile).where(UserBiometricProfile.user_id == str(u_obj.user_id))
+                    res2 = await session.execute(stmt2)
+                    p2 = res2.scalar_one_or_none()
+                    if p2:
+                        return p2
+
+            return None
     except Exception as e:
         print(f"[biometrics-db] Warning: PostgreSQL get profile error: {e}")
         return None

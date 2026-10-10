@@ -556,10 +556,6 @@ async def launch_my_assignment(
             bio_profile
             and bio_profile.is_enrolled
             and bio_profile.face_embedding is not None
-            and bio_profile.is_gaze_calibrated
-            and bio_profile.gaze_weights is not None
-            and bio_profile.is_neutral_calibrated
-            and bio_profile.neutral_baseline_mean is not None
         )
 
         if not is_bio_ready:

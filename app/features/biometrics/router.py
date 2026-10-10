@@ -489,8 +489,8 @@ async def get_student_biometrics_status(user_id: str):
         neutral_calib = bool(profile.get("is_neutral_calibrated", False) or get_affect_engine(uid).calibrator.is_calibrated)
         can_edit = bool(profile.get("can_edit", True))
 
-    # All three stages (Face Enrollment + Gaze Tracking + Neutral Baseline) MUST be completed
-    is_fully_registered = bool(enrolled and gaze_calib and neutral_calib)
+    # Primary registration is completed once genuine face biometric embedding is enrolled
+    is_registered = bool(enrolled)
 
     last_time = None
     if db_profile and db_profile.updated_at:
@@ -506,9 +506,9 @@ async def get_student_biometrics_status(user_id: str):
         "gaze_calibrated": gaze_calib,
         "is_neutral_calibrated": neutral_calib,
         "neutral_calibrated": neutral_calib,
-        "ready_for_exam": is_fully_registered,
+        "ready_for_exam": is_registered,
         "can_edit": can_edit,
-        "is_fully_registered": is_fully_registered,
+        "is_fully_registered": is_registered,
         "last_updated": last_time or datetime.utcnow().isoformat()
     }
 
