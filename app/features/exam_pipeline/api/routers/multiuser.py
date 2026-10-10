@@ -606,8 +606,27 @@ async def launch_my_assignment(
         from ...multiuser.models import EnrollmentStatus
         if enrollment and enrollment.status == EnrollmentStatus.ASSIGNED and slot_info:
             from datetime import datetime, timezone, timedelta
+            now_utc = datetime.now(timezone.utc)
             tehran_tz = timezone(timedelta(hours=3, minutes=30))
-            now_tehran = datetime.now(timezone.utc).astimezone(tehran_tz)
+            now_tehran = now_utc.astimezone(tehran_tz)
+
+            if assignment.ends_at:
+                end_utc = assignment.ends_at if assignment.ends_at.tzinfo else assignment.ends_at.replace(tzinfo=timezone.utc)
+                if now_utc > end_utc:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="زمان برگزاری این آزمون به پایان رسیده است.",
+                    )
+
+            if assignment.starts_at:
+                start_utc = assignment.starts_at if assignment.starts_at.tzinfo else assignment.starts_at.replace(tzinfo=timezone.utc)
+                start_tehran = start_utc.astimezone(tehran_tz)
+                if now_tehran.date() < start_tehran.date():
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"این آزمون برای تاریخ {start_tehran.strftime('%Y/%m/%d')} برنامه‌ریزی شده و هنوز فرا نرسیده است.",
+                    )
+
             cur_mins = now_tehran.hour * 60 + now_tehran.minute
 
             s_str = slot_info.get("start_time")

@@ -817,47 +817,65 @@ async def my_student_exams(
 
         my_slot = student_slots.get(student.id)
         from ...multiuser.models import EnrollmentStatus
-        if enrollment.status == EnrollmentStatus.ASSIGNED and my_slot:
-            e_str = my_slot.get("end_time")
-            if e_str and ":" in e_str:
-                eh, em = map(int, e_str.split(":"))
-                slot_end_mins = eh * 60 + em
-                from datetime import datetime, timezone, timedelta
-                tehran_tz = timezone(timedelta(hours=3, minutes=30))
-                now_tehran = datetime.now(timezone.utc).astimezone(tehran_tz)
-                cur_mins = now_tehran.hour * 60 + now_tehran.minute
-                overall_end_mins = 24 * 60
-                if assignment.ends_at:
-                    end_dt = assignment.ends_at.astimezone(tehran_tz) if assignment.ends_at.tzinfo else assignment.ends_at
-                    overall_end_mins = end_dt.hour * 60 + end_dt.minute
-                if cur_mins > slot_end_mins and cur_mins <= overall_end_mins:
-                    found_slot = None
-                    for sl in slots:
-                        ssh, ssm = map(int, sl.start_time.split(":"))
-                        seh, sem = map(int, sl.end_time.split(":"))
-                        smins = ssh * 60 + ssm
-                        emins = seh * 60 + sem
-                        if smins - 2 <= cur_mins <= emins and (not sl.is_booked or sl.booked_by_me):
-                            found_slot = sl
-                            break
-                    if not found_slot:
+        from datetime import datetime, timezone, timedelta
+        now_utc = datetime.now(timezone.utc)
+        tehran_tz = timezone(timedelta(hours=3, minutes=30))
+        now_tehran = now_utc.astimezone(tehran_tz)
+
+        is_assignment_ended = False
+        if assignment.ends_at:
+            end_utc = assignment.ends_at if assignment.ends_at.tzinfo else assignment.ends_at.replace(tzinfo=timezone.utc)
+            if now_utc > end_utc:
+                is_assignment_ended = True
+
+        if enrollment.status == EnrollmentStatus.ASSIGNED and my_slot and not is_assignment_ended:
+            is_today = True
+            if assignment.starts_at:
+                start_dt = assignment.starts_at.astimezone(tehran_tz) if assignment.starts_at.tzinfo else assignment.starts_at
+                is_today = (now_tehran.date() == start_dt.date())
+
+            if is_today:
+                e_str = my_slot.get("end_time")
+                if e_str and ":" in e_str:
+                    eh, em = map(int, e_str.split(":"))
+                    slot_end_mins = eh * 60 + em
+                    cur_mins = now_tehran.hour * 60 + now_tehran.minute
+                    overall_end_mins = 24 * 60
+                    if assignment.ends_at:
+                        end_dt = assignment.ends_at.astimezone(tehran_tz) if assignment.ends_at.tzinfo else assignment.ends_at
+                        overall_end_mins = end_dt.hour * 60 + end_dt.minute
+                    if cur_mins > slot_end_mins and cur_mins <= overall_end_mins:
+                        found_slot = None
                         for sl in slots:
+                            ssh, ssm = map(int, sl.start_time.split(":"))
                             seh, sem = map(int, sl.end_time.split(":"))
+                            smins = ssh * 60 + ssm
                             emins = seh * 60 + sem
-                            if cur_mins <= emins and (not sl.is_booked or sl.booked_by_me):
+                            if smins - 2 <= cur_mins <= emins and (not sl.is_booked or sl.booked_by_me):
                                 found_slot = sl
                                 break
-                    if found_slot:
-                        student_slots[student.id] = {
-                            "slot_index": found_slot.slot_index,
-                            "start_time": found_slot.start_time,
-                            "end_time": found_slot.end_time,
-                        }
-                        my_slot = student_slots[student.id]
-                        multiuser_service.repository.save_assignment(assignment)
+                        if not found_slot:
+                            for sl in slots:
+                                seh, sem = map(int, sl.end_time.split(":"))
+                                emins = seh * 60 + sem
+                                if cur_mins <= emins and (not sl.is_booked or sl.booked_by_me):
+                                    found_slot = sl
+                                    break
+                        if found_slot:
+                            student_slots[student.id] = {
+                                "slot_index": found_slot.slot_index,
+                                "start_time": found_slot.start_time,
+                                "end_time": found_slot.end_time,
+                            }
+                            my_slot = student_slots[student.id]
+                            multiuser_service.repository.save_assignment(assignment)
 
         student_slot_start = my_slot["start_time"] if my_slot else (slots[0].start_time if slots else w_start)
         student_slot_end = my_slot["end_time"] if my_slot else (slots[0].end_time if slots else w_end)
+
+        card_status = enrollment.status.value
+        if is_assignment_ended and enrollment.status == EnrollmentStatus.ASSIGNED:
+            card_status = "expired"
 
         cards.append(
             StudentExamCardResponse(
@@ -871,7 +889,7 @@ async def my_student_exams(
                 start_at=assignment.starts_at.isoformat() if assignment.starts_at else None,
                 end_at=assignment.ends_at.isoformat() if assignment.ends_at else None,
                 duration=assignment.duration_seconds // 60,
-                status=enrollment.status.value,
+                status=card_status,
                 score=score,
                 passed=passed,
                 window_start=w_start,
