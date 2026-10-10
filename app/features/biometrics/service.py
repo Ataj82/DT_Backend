@@ -195,27 +195,21 @@ def _detect_single_frame_face(test_img: np.ndarray, preferred_detector: str = "o
                 pass
 
             gray = cv2.cvtColor(test_img, cv2.COLOR_BGR2GRAY)
-            # Try raw grayscale, histogram-equalized, and CLAHE adaptive equalization
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             gray_clahe = clahe.apply(gray)
-            gray_eq = cv2.equalizeHist(gray)
-            gray_flipped = cv2.flip(gray, 1)
 
-            for g_img in (gray, gray_clahe, gray_eq, gray_flipped):
-                for cascade in cascades:
-                    for s_factor in (1.05, 1.1, 1.15):
-                        for m_neigh in (2, 3):
-                            faces = cascade.detectMultiScale(
-                                g_img,
-                                scaleFactor=s_factor,
-                                minNeighbors=m_neigh,
-                                minSize=(24, 24)
-                            )
-                            if len(faces) > 0:
-                                fx, fy, fw, fh = max(faces, key=lambda b: b[2] * b[3])
-                                face_objs = [{"facial_area": {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}}]
-                                chosen_detector = "opencv"
-                                return face_objs, chosen_detector
+            for cascade in cascades:
+                faces = cascade.detectMultiScale(
+                    gray_clahe,
+                    scaleFactor=1.1,
+                    minNeighbors=3,
+                    minSize=(32, 32)
+                )
+                if len(faces) > 0:
+                    fx, fy, fw, fh = max(faces, key=lambda b: b[2] * b[3])
+                    face_objs = [{"facial_area": {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}}]
+                    chosen_detector = "opencv"
+                    return face_objs, chosen_detector
         except Exception as e:
             print(f"[biometrics] Cascade detection fallback error: {e}")
 

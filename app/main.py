@@ -147,6 +147,12 @@ async def startup_event():
     except Exception as e:
         print(f"[startup] Warning: exam pipeline framework init error: {e}")
 
+    try:
+        from app.features.biometrics.warmup import warm_up_biometric_models
+        warm_up_biometric_models()
+    except Exception as e:
+        print(f"[startup] Warning: biometrics warmup error: {e}")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():

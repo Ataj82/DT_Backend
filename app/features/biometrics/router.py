@@ -122,7 +122,9 @@ async def enroll_face(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    embedding, err, details = process_live_frame(img, detector=detector, liveness_mode=liveness_mode)
+    embedding, err, details = await asyncio.to_thread(
+        process_live_frame, img, detector=detector, liveness_mode=liveness_mode
+    )
     if err:
         if "Spoof" in err or "presentation attack" in err.lower():
             raise HTTPException(
@@ -177,7 +179,9 @@ async def verify_face(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    live_embedding, err, details = process_live_frame(img, detector=detector, liveness_mode=liveness_mode)
+    live_embedding, err, details = await asyncio.to_thread(
+        process_live_frame, img, detector=detector, liveness_mode=liveness_mode
+    )
     if err:
         if "Spoof" in err or "presentation attack" in err.lower():
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=err)
