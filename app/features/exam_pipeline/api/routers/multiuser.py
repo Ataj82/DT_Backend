@@ -539,6 +539,36 @@ async def launch_my_assignment(
         if not assignment:
             raise HTTPException(status_code=404, detail="آزمون یافت نشد.")
 
+        # Verify Biometric Identity & Calibration before entering exam
+        from app.features.biometrics.database import get_biometric_profile_db
+        candidate_ids = [str(student.id)]
+        if hasattr(student, "username") and student.username:
+            candidate_ids.append(str(student.username))
+
+        bio_profile = None
+        for candidate in candidate_ids:
+            p = await get_biometric_profile_db(candidate)
+            if p:
+                bio_profile = p
+                break
+
+        is_bio_ready = bool(
+            bio_profile
+            and bio_profile.is_enrolled
+            and bio_profile.face_embedding is not None
+            and bio_profile.is_gaze_calibrated
+            and bio_profile.gaze_weights is not None
+            and bio_profile.is_neutral_calibrated
+            and bio_profile.neutral_baseline_mean is not None
+        )
+
+        if not is_bio_ready:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="ثبت اطلاعات بیومتریک و احراز هویت جهت ورود به آزمون الزامی است. لطفاً ابتدا مراحل احراز هویت و کالیبراسیون را تکمیل نمایید.",
+                headers={"X-Error-Code": "BIOMETRICS_REQUIRED"}
+            )
+
         # Ensure student is enrolled in assignment
         enrollment = assignment.students.get(str(student.id))
         config_snapshot = assignment.configuration_snapshot or {}
