@@ -213,9 +213,21 @@ class AuthService:
             else:
                 username = "admin"
 
-        stmt = select(User).where(User.username == username)
-        result = await self.db.execute(stmt)
-        user = result.scalar_one_or_none()
+        user = None
+        if username:
+            try:
+                from uuid import UUID
+                parsed_uid = UUID(str(username))
+                stmt_uid = select(User).where(User.user_id == parsed_uid)
+                res_uid = await self.db.execute(stmt_uid)
+                user = res_uid.scalar_one_or_none()
+            except (ValueError, TypeError):
+                pass
+
+        if not user:
+            stmt = select(User).where(User.username == username)
+            result = await self.db.execute(stmt)
+            user = result.scalar_one_or_none()
 
         if user:
             u_lower = (user.username or "").lower()

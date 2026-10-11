@@ -168,6 +168,17 @@ async def verify_face(
     uid = user_id.strip()
     enrolled_embedding = get_face_embedding(uid)
     if enrolled_embedding is None:
+        await restore_user_calibration_state(uid)
+        db_profile = await get_biometric_profile_db(uid)
+        if db_profile and db_profile.face_embedding:
+            from .database import STUDENT_PROFILES, VECTOR_DATABASE
+            VECTOR_DATABASE[uid] = db_profile.face_embedding
+            if db_profile.user_id:
+                VECTOR_DATABASE[str(db_profile.user_id)] = db_profile.face_embedding
+            STUDENT_PROFILES[uid] = db_profile.to_dict()
+            enrolled_embedding = db_profile.face_embedding
+
+    if enrolled_embedding is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"User '{uid}' is not enrolled. Please enroll first."

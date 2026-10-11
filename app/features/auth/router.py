@@ -305,3 +305,102 @@ async def login_swagger(
         "access_token": result["access_token"],
         "token_type": "bearer",
     }
+
+
+@router.get("/login-directory", status_code=status.HTTP_200_OK)
+async def get_login_directory(db: AsyncSession = Depends(get_db)):
+    """
+    Public directory of courses, teachers, and enrolled students for dynamic portal login.
+    Enables choosing any course and seeing its specific instructor and student roster.
+    """
+    from sqlalchemy import select
+    from app.features.lessons.models import Lesson, LessonMember
+    from app.features.courses.router import COURSE_METADATA
+
+    stmt = select(Lesson).order_by(Lesson.created_at.asc())
+    result = await db.execute(stmt)
+    lessons = result.scalars().all()
+
+    directory = []
+    for lesson in lessons:
+        teacher_info = None
+        if lesson.teacher_id:
+            stmt_t = select(User).where(User.user_id == lesson.teacher_id)
+            res_t = await db.execute(stmt_t)
+            t_user = res_t.scalar_one_or_none()
+            if t_user:
+                t_name = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
+                teacher_info = {
+                    "id": str(t_user.user_id),
+                    "name": t_name,
+                    "username": t_user.username,
+                    "role": "TEACHER",
+                    "defaultToken": f"sso_token_{t_user.username}",
+                    "avatar": t_user.profile_url,
+                }
+
+        if not teacher_info:
+            teacher_info = {
+                "id": "10000000-0000-4000-8000-000000000001",
+                "name": "دکتر محمد اله بخش",
+                "username": "mohammad_allahbakhsh",
+                "role": "TEACHER",
+                "defaultToken": "sso_token_dr_allahbakhsh",
+                "avatar": None,
+            }
+
+        stmt_students = (
+            select(User)
+            .join(LessonMember, LessonMember.user_id == User.user_id)
+            .where(
+                LessonMember.lesson_id == lesson.lesson_id,
+                User.user_type == "STUDENT",
+            )
+            .order_by(User.first_name.asc(), User.last_name.asc())
+        )
+        res_students = await db.execute(stmt_students)
+        student_users = res_students.scalars().all()
+
+        students_list = []
+        for s in student_users:
+            s_name = f"{s.first_name or ''} {s.last_name or ''}".strip() or s.username
+            students_list.append({
+                "id": str(s.user_id),
+                "name": s_name,
+                "username": s.username,
+                "role": "STUDENT",
+                "defaultToken": f"sso_token_{s.username}",
+                "avatar": s.profile_url,
+            })
+
+        meta = COURSE_METADATA.get(lesson.lesson_id, {})
+        directory.append({
+            "id": str(lesson.lesson_id),
+            "title": lesson.title,
+            "department": meta.get("department", "مهندسی کامپیوتر"),
+            "degree": meta.get("degree", "کارشناسی"),
+            "units": meta.get("units", 3),
+            "teacher": teacher_info,
+            "students": students_list,
+        })
+
+    if not directory:
+        directory.append({
+            "id": "c0000000-0000-4000-8000-000000000001",
+            "title": "سیستم عامل",
+            "department": "مهندسی کامپیوتر",
+            "degree": "کارشناسی",
+            "units": 3,
+            "teacher": {
+                "id": "10000000-0000-4000-8000-000000000001",
+                "name": "دکتر محمد اله بخش",
+                "username": "mohammad_allahbakhsh",
+                "role": "TEACHER",
+                "defaultToken": "sso_token_dr_allahbakhsh",
+                "avatar": None,
+            },
+            "students": [],
+        })
+
+    return directory
+
