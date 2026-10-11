@@ -198,18 +198,28 @@ def _detect_single_frame_face(test_img: np.ndarray, preferred_detector: str = "o
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             gray_clahe = clahe.apply(gray)
 
+            img_h, img_w = test_img.shape[:2]
+            total_img_area = img_h * img_w
             for cascade in cascades:
                 faces = cascade.detectMultiScale(
                     gray_clahe,
                     scaleFactor=1.1,
-                    minNeighbors=3,
-                    minSize=(32, 32)
+                    minNeighbors=4,
+                    minSize=(40, 40)
                 )
                 if len(faces) > 0:
-                    fx, fy, fw, fh = max(faces, key=lambda b: b[2] * b[3])
-                    face_objs = [{"facial_area": {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}}]
-                    chosen_detector = "opencv"
-                    return face_objs, chosen_detector
+                    max_box_area = max(fw * fh for (_, _, fw, fh) in faces)
+                    filtered_faces = [
+                        (fx, fy, fw, fh) for (fx, fy, fw, fh) in faces
+                        if (fw * fh >= max_box_area * 0.20) and (fw * fh >= total_img_area * 0.010)
+                    ]
+                    if filtered_faces:
+                        face_objs = [
+                            {"facial_area": {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}}
+                            for (fx, fy, fw, fh) in filtered_faces
+                        ]
+                        chosen_detector = "opencv"
+                        return face_objs, chosen_detector
         except Exception as e:
             print(f"[biometrics] Cascade detection fallback error: {e}")
 
@@ -223,8 +233,9 @@ def process_live_frame(
     """
     Two-stage face authentication pipeline:
     1. Multi-orientation (0°, 90°, 270°, 180°) face detection with CLAHE & Haar cascade fallbacks.
-    2. Configurable MiniFASNet passive anti-spoofing verification.
-    3. ArcFace 512-dimensional embedding extraction on genuine upright face.
+    2. Strict single-face presence verification (rejects 0 faces or >1 faces).
+    3. Configurable MiniFASNet passive anti-spoofing verification.
+    4. ArcFace 512-dimensional embedding extraction on genuine upright face.
     
     Returns:
         tuple (embedding: list | None, error_message: str | None, details: dict)
@@ -247,9 +258,49 @@ def process_live_frame(
                 break
 
         if not face_objs:
-            return None, "No face detected in the frame. Please look directly at the camera.", {}
+            return None, "هیچ چهره‌ای در کادر دوربین یافت نشد. لطفاً در برابر دوربین قرار گیرید.", {}
 
-        face_data = face_objs[0]
+        # Step 1.5: Enforce strictly ONE face in the frame
+        img_h, img_w = img.shape[:2]
+        total_img_area = img_h * img_w
+
+        valid_faces = []
+        max_area = 0
+        for f in face_objs:
+            fa = f.get("facial_area", {})
+            if isinstance(fa, dict):
+                w, h = fa.get("w", 0), fa.get("h", 0)
+            elif isinstance(fa, (list, tuple)) and len(fa) == 4:
+                w, h = fa[2], fa[3]
+            else:
+                w, h = 0, 0
+            area = w * h
+            if area > max_area:
+                max_area = area
+
+        for f in face_objs:
+            fa = f.get("facial_area", {})
+            conf = f.get("confidence", 1.0)
+            if isinstance(fa, dict):
+                w, h = fa.get("w", 0), fa.get("h", 0)
+            elif isinstance(fa, (list, tuple)) and len(fa) == 4:
+                w, h = fa[2], fa[3]
+            else:
+                w, h = 0, 0
+            area = w * h
+            # Accept if face area is at least 20% of the largest face, at least 1.0% of image, and confidence >= 0.40
+            if area >= max(max_area * 0.20, total_img_area * 0.010) and (conf is None or conf >= 0.40):
+                valid_faces.append(f)
+
+        if len(valid_faces) == 0:
+            return None, "هیچ چهره‌ای در کادر دوربین یافت نشد. لطفاً در برابر دوربین قرار گیرید.", {}
+
+        if len(valid_faces) > 1:
+            return None, "تنها یک چهره باید در کادر تصویر قرار داشته باشد. بیش از یک چهره شناسایی شد.", {
+                "face_count": len(valid_faces)
+            }
+
+        face_data = valid_faces[0]
         fa = face_data.get("facial_area", {})
         if isinstance(fa, dict):
             facial_tuple = (fa.get("x", 0), fa.get("y", 0), fa.get("w", 0), fa.get("h", 0))
