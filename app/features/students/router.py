@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db
 from app.features.users.models import User
-from app.features.lessons.models import LessonMember
+from app.features.lessons.models import Lesson, LessonMember
 from app.features.chat.models import Message
 from app.features.auth.models import UserSession
 from .schemas import StudentResponse, BlockStudentRequest
@@ -93,11 +93,11 @@ def _format_student(
 
 def _resolve_course_id(course_id: str) -> UUID:
     if str(course_id).lower() in ("os", "operating-systems"):
-        return UUID("c0000000-0000-4000-8000-000000000001")
+        return UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
     try:
         return UUID(course_id)
     except ValueError:
-        return UUID("c0000000-0000-4000-8000-000000000001")
+        return UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
 
 def _resolve_student_id(student_id: str) -> UUID:
     try:
@@ -112,18 +112,37 @@ def _resolve_student_id(student_id: str) -> UUID:
 @router.get("/courses/{course_id}/students", response_model=List[StudentResponse])
 async def get_students_by_course(course_id: str, db: AsyncSession = Depends(get_db)):
     resolved_course_id = _resolve_course_id(course_id)
+
+    # Fetch course to identify teacher
+    stmt_lesson = select(Lesson.teacher_id).where(Lesson.lesson_id == resolved_course_id)
+    res_lesson = await db.execute(stmt_lesson)
+    teacher_id = res_lesson.scalar_one_or_none()
+
     stmt = (
         select(User)
         .join(LessonMember, LessonMember.user_id == User.user_id)
-        .where(LessonMember.lesson_id == resolved_course_id)
-        .order_by(User.first_name.asc())
+        .where(
+            LessonMember.lesson_id == resolved_course_id,
+            LessonMember.role == "STUDENT",
+            User.user_type == "STUDENT",
+        )
     )
+    if teacher_id:
+        stmt = stmt.where(User.user_id != teacher_id)
+
+    stmt = stmt.order_by(User.first_name.asc(), User.last_name.asc())
     result = await db.execute(stmt)
     users = result.scalars().all()
 
     # Fallback to all student users if none specifically enrolled
     if not users:
-        stmt_all = select(User).where(User.user_type == "STUDENT").order_by(User.first_name.asc())
+        stmt_all = (
+            select(User)
+            .where(User.user_type == "STUDENT")
+        )
+        if teacher_id:
+            stmt_all = stmt_all.where(User.user_id != teacher_id)
+        stmt_all = stmt_all.order_by(User.first_name.asc(), User.last_name.asc())
         result_all = await db.execute(stmt_all)
         users = result_all.scalars().all()
 
