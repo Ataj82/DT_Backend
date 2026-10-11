@@ -133,6 +133,7 @@ class LessonQuizCreate(BaseModel):
     exam_date: Optional[str] = None
     start_at: Optional[Union[datetime, str]] = None
     end_at: Optional[Union[datetime, str]] = None
+    language: Optional[str] = "fa"
     materials: Optional[List[Union[str, dict[str, Any]]]] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="ignore")
@@ -151,6 +152,7 @@ class LessonQuizResponse(BaseModel):
     exam_date: Optional[str] = None
     start_at: Optional[Union[datetime, str]] = None
     end_at: Optional[Union[datetime, str]] = None
+    language: Optional[str] = "fa"
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True, extra="ignore")

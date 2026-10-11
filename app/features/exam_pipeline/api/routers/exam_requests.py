@@ -165,11 +165,13 @@ async def generate_goals_from_file(
     course_title: Optional[str] = Form(None),
     exam_title: Optional[str] = Form(None),
     max_goals: int = Form(5),
+    language: Optional[str] = Form(None),
     framework=Depends(get_framework),
 ):
     """
     Extracts text from an uploaded course document (PDF, DOCX, TXT, PPTX) and generates
     structured oral assessment goals (Bloom level, type, description) via LLM or fallback pipeline.
+    Supports 'fa' (Persian with English technical terms preserved), 'en' (English), or auto-detection.
     """
     content_bytes = await file.read()
     if not content_bytes:
@@ -185,8 +187,20 @@ async def generate_goals_from_file(
         )
 
     # Intelligently condense text to strictly <= 2000 chars (approx. 1000 - 1500 tokens)
-    # This prevents HTTP 400 Context Length Exceeded errors on 4096-token LLM models
     optimized_text = await asyncio.to_thread(optimize_content_for_llm, raw_text, file.filename, 2000)
+
+    # Resolve target language: "fa", "en", or "auto"
+    import re
+    req_lang = (language or "").strip().lower()
+    if req_lang in ("en", "english"):
+        target_lang = "en"
+    elif req_lang in ("fa", "persian", "farsi"):
+        target_lang = "fa"
+    else:
+        # Auto-detect from optimized_text
+        fa_chars = len(re.findall(r"[\u0600-\u06FF]", optimized_text))
+        en_chars = len(re.findall(r"[a-zA-Z]", optimized_text))
+        target_lang = "en" if en_chars > (fa_chars * 2) and fa_chars < 50 else "fa"
 
     goals = []
     # 1. Attempt LLM generation
@@ -194,30 +208,50 @@ async def generate_goals_from_file(
         from ...llm.provider import LLMProvider
         from ...configuration.llm_configuration import LLMConfiguration
         import json
-        import re
 
         llm = LLMProvider(configuration=LLMConfiguration.from_env())
-
         target_max_goals = max(1, int(max_goals or 1))
-        system_prompt = (
-            "You are an expert university professor and oral examination designer.\n"
-            "Analyze the following educational text/syllabus and extract the most important assessment goals (سرفصل‌ها و اهداف ارزیابی آزمون شفاهی).\n"
-            f"Generate up to {target_max_goals} distinct, high-quality goals in PERSIAN (generate exactly {target_max_goals} if possible, or fewer if the document content is limited).\n"
-            "Each goal must have:\n"
-            "- title: Short, clear topic title in Persian (e.g., 'مفاهیم زمان‌بندی پردازنده و الگوریتم‌های آن')\n"
-            "- description: Concise explanation of what is evaluated (in Persian)\n"
-            "- goal_type: exactly one of ['theoretical', 'practical', 'analytical']\n"
-            "- bloom_level: integer from 1 to 6 (1: یادآوری, 2: درک مفاهیم, 3: به‌کارگیری, 4: تحلیل, 5: ارزیابی, 6: آفرینش)\n\n"
-            "Return ONLY a valid JSON array of objects. Do not include markdown code block backticks if possible, or wrap cleanly in ```json ... ```. No extra commentary."
-        )
 
-        user_content = (
-            f"درس: {course_title or 'سیستم عامل'}\n"
-            f"عنوان آزمون: {exam_title or 'آزمون شفاهی'}\n"
-            f"تعداد اهداف مورد نیاز: حداکثر {target_max_goals} هدف (در صورت وجود محتوای کافی، دقیقاً {target_max_goals} هدف تولید کنید)\n\n"
-            f"خلاصه و سرفصل‌های کلیدی استخراج‌شده از سند «{file.filename}»:\n\n"
-            f"{optimized_text}"
-        )
+        if target_lang == "en":
+            system_prompt = (
+                "You are an expert university professor and oral examination designer.\n"
+                "Analyze the following educational text/syllabus and extract the most important assessment goals for an oral examination.\n"
+                f"Generate up to {target_max_goals} distinct, high-quality goals in ENGLISH (generate exactly {target_max_goals} if possible, or fewer if the document content is limited).\n"
+                "Each goal must have:\n"
+                "- title: Clear, concise academic topic title in English (e.g., 'CPU Scheduling Algorithms & Context Switching')\n"
+                "- description: Concise explanation of what is evaluated in English\n"
+                "- goal_type: exactly one of ['theoretical', 'practical', 'analytical']\n"
+                "- bloom_level: integer from 1 to 6 (1: Remember, 2: Understand, 3: Apply, 4: Analyze, 5: Evaluate, 6: Create)\n\n"
+                "Return ONLY a valid JSON array of objects. Do not include markdown code block backticks if possible, or wrap cleanly in ```json ... ```. No extra commentary."
+            )
+            user_content = (
+                f"Course: {course_title or 'Educational Course'}\n"
+                f"Exam Title: {exam_title or 'Oral Assessment'}\n"
+                f"Required Goal Count: Up to {target_max_goals} goals\n\n"
+                f"Key syllabus excerpts extracted from document '{file.filename}':\n\n"
+                f"{optimized_text}"
+            )
+        else:
+            system_prompt = (
+                "You are an expert university professor and oral examination designer.\n"
+                "Analyze the following educational text/syllabus and extract the most important assessment goals (سرفصل‌ها و اهداف ارزیابی آزمون شفاهی).\n"
+                f"Generate up to {target_max_goals} distinct, high-quality goals in PERSIAN.\n"
+                "CRITICAL REQUIREMENT FOR CONCEPTUAL CLARITY:\n"
+                "For every scientific, technical, or domain-specific concept, ALWAYS include the original English technical term in parentheses alongside the Persian term (e.g. 'مفاهیم حافظه مجازی و خطای صفحه (Virtual Memory & Page Fault)', 'الگوریتم‌های زمان‌بندی پردازنده (CPU Scheduling Algorithms)', 'همگام‌سازی فرآیندها (Process Synchronization)'). This ensures deep conceptual understanding without awkward or confusing translations.\n"
+                "Each goal must have:\n"
+                "- title: Clear topic title in Persian with the English technical term in parentheses\n"
+                "- description: Concise explanation of what is evaluated (in Persian, preserving key English terms in parentheses)\n"
+                "- goal_type: exactly one of ['theoretical', 'practical', 'analytical']\n"
+                "- bloom_level: integer from 1 to 6 (1: یادآوری, 2: درک مفاهیم, 3: به‌کارگیری, 4: تحلیل, 5: ارزیابی, 6: آفرینش)\n\n"
+                "Return ONLY a valid JSON array of objects. Do not include markdown code block backticks if possible, or wrap cleanly in ```json ... ```. No extra commentary."
+            )
+            user_content = (
+                f"درس: {course_title or 'سیستم عامل'}\n"
+                f"عنوان آزمون: {exam_title or 'آزمون شفاهی'}\n"
+                f"تعداد اهداف مورد نیاز: حداکثر {target_max_goals} هدف (در صورت وجود محتوای کافی، دقیقاً {target_max_goals} هدف تولید کنید)\n\n"
+                f"خلاصه و سرفصل‌های کلیدی استخراج‌شده از سند «{file.filename}»:\n\n"
+                f"{optimized_text}"
+            )
 
         def _parse_llm_json(raw_resp: str):
             cleaned = raw_resp.strip()
@@ -360,10 +394,16 @@ async def generate_goals_from_file(
                 })
         else:
             base_name = file.filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ")
-            goals = [
-                {"title": f"مفاهیم پایه {base_name}", "description": f"آشنایی و درک مفاهیم کلیدی {base_name}", "goal_type": "theoretical", "bloom_level": 2},
-                {"title": f"تحلیل و کاربرد {base_name}", "description": f"به‌کارگیری و تحلیل مسائل مربوط به {base_name}", "goal_type": "practical", "bloom_level": 3},
-            ]
+            if target_lang == "en":
+                goals = [
+                    {"title": f"Core Concepts of {base_name}", "description": f"Understanding fundamental principles of {base_name}", "goal_type": "theoretical", "bloom_level": 2},
+                    {"title": f"Analysis and Application of {base_name}", "description": f"Applying and analyzing concepts related to {base_name}", "goal_type": "practical", "bloom_level": 3},
+                ]
+            else:
+                goals = [
+                    {"title": f"مفاهیم پایه ({base_name})", "description": f"آشنایی و درک مفاهیم کلیدی {base_name}", "goal_type": "theoretical", "bloom_level": 2},
+                    {"title": f"تحلیل و کاربرد ({base_name})", "description": f"به‌کارگیری و تحلیل مسائل مربوط به {base_name}", "goal_type": "practical", "bloom_level": 3},
+                ]
 
     target_max_goals = max(1, int(max_goals or 1))
     goals = goals[:target_max_goals]
@@ -444,6 +484,7 @@ def create_exam_request(
 
     if assignment.configuration_snapshot is None:
         assignment.configuration_snapshot = {}
+    assignment.configuration_snapshot["language"] = req_lang
     assignment.configuration_snapshot["gap_minutes"] = request.gap_minutes or 5
     if request.materials:
         assignment.configuration_snapshot["materials"] = request.materials
@@ -642,6 +683,7 @@ async def _sync_db_quizzes_to_pipeline(multiuser_service, framework, student_id_
                         )
                         multiuser_service.repository.save_user(prof)
 
+                    quiz_lang = getattr(q, "language", None) or "fa"
                     assignment = multiuser_service.create_assignment(
                         professor=prof,
                         title=q.title,
@@ -652,6 +694,7 @@ async def _sync_db_quizzes_to_pipeline(multiuser_service, framework, student_id_
                         goal_time_allocations_seconds=allocations,
                         passing_threshold=0.70,
                         allow_followup_questions=True,
+                        language=quiz_lang,
                         starts_at=q.start_at,
                         ends_at=q.end_at,
                         assignment_id=qid,
@@ -659,6 +702,7 @@ async def _sync_db_quizzes_to_pipeline(multiuser_service, framework, student_id_
                     assignment.status = AssignmentStatus.PUBLISHED if q.is_active is not False else AssignmentStatus.CLOSED
                     if assignment.configuration_snapshot is None:
                         assignment.configuration_snapshot = {}
+                    assignment.configuration_snapshot["language"] = quiz_lang
                     if q.exam_date:
                         assignment.configuration_snapshot["exam_date"] = q.exam_date
                     assignment.configuration_snapshot["gap_minutes"] = q.gap_minutes or 5
