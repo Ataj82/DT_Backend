@@ -2,7 +2,7 @@ from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Request
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db
@@ -43,14 +43,25 @@ async def get_teacher_join_requests(
     if not caller or caller.user_type != "TEACHER":
         return []
 
-    # Query pending join requests for this teacher's lessons
+    CANONICAL_TEACHER_UUID = UUID("10000000-0000-4000-8000-000000000001")
+    teacher_ids = {teacher_id, CANONICAL_TEACHER_UUID}
+
+    # Query pending join requests for any lessons assigned to this teacher
     stmt = (
         select(ChatJoinRequest, User, Lesson)
         .join(User, ChatJoinRequest.user_id == User.user_id)
         .join(Lesson, ChatJoinRequest.chat_id == Lesson.lesson_id)
         .where(
             ChatJoinRequest.status == "PENDING",
-            Lesson.teacher_id == teacher_id,
+            or_(
+                Lesson.teacher_id.in_(teacher_ids),
+                Lesson.lesson_id.in_(
+                    select(LessonMember.lesson_id).where(
+                        LessonMember.user_id.in_(teacher_ids),
+                        LessonMember.role == "TEACHER",
+                    )
+                ),
+            ),
         )
         .order_by(ChatJoinRequest.requested_at.desc())
     )

@@ -1,5 +1,17 @@
 http:
   routers:
+    # 0. Qwen LLM Direct Reverse Proxy
+    qwen-llm-router:
+      rule: "PathPrefix(`/llm`)"
+      service: qwen-llm-service
+      entryPoints:
+        - web
+        - websecure
+      tls: {}
+      priority: 120
+      middlewares:
+        - strip-llm-prefix
+
     # 1. Microservice Routing for Legacy LLM and Processing Services
     legacy-llm-router:
       rule: "PathPrefix(`/api/ask`) || PathPrefix(`/api/generate-pdf/`) || PathPrefix(`/api/admin`) || PathPrefix(`/api/quiz`) || PathPrefix(`/api/contexts`) || PathPrefix(`/api/voice`)"
@@ -20,7 +32,19 @@ http:
       tls: {}
       priority: 5
 
+  middlewares:
+    strip-llm-prefix:
+      stripPrefix:
+        prefixes:
+          - "/llm"
+
   services:
+    qwen-llm-service:
+      loadBalancer:
+        servers:
+          - url: "http://94.184.177.171:8000"
+        passHostHeader: false
+
     legacy-llm-service:
       loadBalancer:
         servers:

@@ -343,7 +343,7 @@ async def get_login_directory(db: AsyncSession = Depends(get_db)):
             teacher_info = {
                 "id": "10000000-0000-4000-8000-000000000001",
                 "name": "دکتر محمد اله بخش",
-                "username": "mohammad_allahbakhsh",
+                "username": "teacher",
                 "role": "TEACHER",
                 "defaultToken": "sso_token_dr_allahbakhsh",
                 "avatar": None,
@@ -394,7 +394,7 @@ async def get_login_directory(db: AsyncSession = Depends(get_db)):
             "teacher": {
                 "id": "10000000-0000-4000-8000-000000000001",
                 "name": "دکتر محمد اله بخش",
-                "username": "mohammad_allahbakhsh",
+                "username": "teacher",
                 "role": "TEACHER",
                 "defaultToken": "sso_token_dr_allahbakhsh",
                 "avatar": None,

@@ -12,6 +12,7 @@ from app.core.security import decode_token
 from app.features.users.models import User
 from app.features.lessons.models import Lesson, LessonMember
 from app.features.chat.models import Chat, Message, ChatJoinRequest
+from app.features.chat.router import resolve_student_course_chat_uuid
 from .schemas import (
     CourseResponse,
     CourseDetailResponse,
@@ -25,10 +26,18 @@ from .schemas import (
 
 router = APIRouter()
 
-OS_COURSE_UUID = UUID("c0000000-0000-4000-8000-000000000001")
+OS_COURSE_UUID = UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
+LEGACY_OS_UUID = UUID("c0000000-0000-4000-8000-000000000001")
 
 COURSE_METADATA = {
     OS_COURSE_UUID: {
+        "degree": "کارشناسی",
+        "units": 3,
+        "course_code": "۲۱۱۰۰۱۲",
+        "department": "مهندسی کامپیوتر",
+        "term": "نیم‌سال دوم ۱۴۰۴-۱۴۰۵",
+    },
+    LEGACY_OS_UUID: {
         "degree": "کارشناسی",
         "units": 3,
         "course_code": "۲۱۱۰۰۱۲",
@@ -48,10 +57,14 @@ def get_course_meta(lesson: Lesson) -> dict:
     }
 
 def resolve_course_uuid(course_id: str) -> UUID:
-    if course_id.lower() in ("os", "operating-systems"):
+    val_str = str(course_id).strip()
+    if val_str.lower() in ("os", "operating-systems"):
         return OS_COURSE_UUID
     try:
-        return UUID(course_id)
+        parsed = UUID(val_str)
+        if parsed == LEGACY_OS_UUID:
+            return OS_COURSE_UUID
+        return parsed
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -61,6 +74,7 @@ def resolve_course_uuid(course_id: str) -> UUID:
 @router.get("", response_model=List[CourseResponse])
 async def get_all_courses(
     active_only: bool = False,
+    enrolled_only: bool = False,
     request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -93,61 +107,6 @@ async def get_all_courses(
             except Exception:
                 pass
 
-    # Query latest message for each lesson
-    latest_messages: Dict[UUID, Message] = {}
-    if lessons:
-        lesson_ids = [l.lesson_id for l in lessons]
-        if current_student_id:
-            # Query student's personal message with the bot
-            stmt_s = (
-                select(Message)
-                .where(Message.chat_id == current_student_id)
-                .order_by(Message.created_at.desc())
-                .limit(1)
-            )
-            res_s = await db.execute(stmt_s)
-            s_msg = res_s.scalar_one_or_none()
-            if s_msg:
-                for l in lessons:
-                    latest_messages[l.lesson_id] = s_msg
-        else:
-            stmt_msg = (
-                select(Message)
-                .where(Message.chat_id.in_(lesson_ids))
-                .order_by(Message.chat_id, Message.created_at.desc())
-                .distinct(Message.chat_id)
-            )
-            res_msg = await db.execute(stmt_msg)
-            for msg in res_msg.scalars().all():
-                latest_messages[msg.chat_id] = msg
-
-    # Calculate unread comments count for student
-    unread_counts: Dict[UUID, int] = {}
-    if lessons:
-        check_chat_ids = [l.lesson_id for l in lessons]
-        if current_student_id:
-            check_chat_ids.append(current_student_id)
-
-        stmt_unr = select(Message).where(
-            Message.chat_id.in_(check_chat_ids),
-            Message.metadata_json.isnot(None),
-        )
-        res_unr = await db.execute(stmt_unr)
-        all_unr_msgs = res_unr.scalars().all()
-        for u_msg in all_unr_msgs:
-            if not u_msg.metadata_json or not isinstance(u_msg.metadata_json, dict):
-                continue
-            u_comments = u_msg.metadata_json.get("comments", [])
-            for uc in u_comments:
-                if not isinstance(uc, dict):
-                    continue
-                uc_read = uc.get("is_read", False)
-                read_by = [str(x) for x in uc.get("read_by", [])]
-                is_unread = not uc_read or (current_student_id and str(current_student_id) not in read_by)
-                if is_unread:
-                    target_l_id = u_msg.chat_id if u_msg.chat_id in [l.lesson_id for l in lessons] else OS_COURSE_UUID
-                    unread_counts[target_l_id] = unread_counts.get(target_l_id, 0) + 1
-
     # Query enrolled courses and pending join requests for student
     enrolled_lesson_ids = set()
     pending_lesson_ids = set()
@@ -162,6 +121,59 @@ async def get_all_courses(
         )
         res_pnd = await db.execute(stmt_pnd)
         pending_lesson_ids = set(res_pnd.scalars().all())
+
+    # Query latest message and unread counts for each lesson
+    latest_messages: Dict[UUID, Message] = {}
+    unread_counts: Dict[UUID, int] = {}
+    if lessons:
+        if current_student_id:
+            student_course_chats: Dict[UUID, UUID] = {}
+            for l in lessons:
+                s_chat_uuid = await resolve_student_course_chat_uuid(db, current_student_id, l.lesson_id)
+                student_course_chats[l.lesson_id] = s_chat_uuid
+
+                stmt_s = (
+                    select(Message)
+                    .where(Message.chat_id == s_chat_uuid)
+                    .order_by(Message.created_at.desc())
+                    .limit(1)
+                )
+                res_s = await db.execute(stmt_s)
+                s_msg = res_s.scalar_one_or_none()
+                if s_msg:
+                    latest_messages[l.lesson_id] = s_msg
+
+            chat_to_lesson_map = {chat_id: l_id for l_id, chat_id in student_course_chats.items()}
+            check_chat_ids = list(student_course_chats.values()) + [l.lesson_id for l in lessons]
+
+            stmt_unr = select(Message).where(
+                Message.chat_id.in_(check_chat_ids),
+                Message.metadata_json.isnot(None),
+            )
+            res_unr = await db.execute(stmt_unr)
+            for u_msg in res_unr.scalars().all():
+                if not u_msg.metadata_json or not isinstance(u_msg.metadata_json, dict):
+                    continue
+                for uc in u_msg.metadata_json.get("comments", []):
+                    if not isinstance(uc, dict):
+                        continue
+                    uc_read = uc.get("is_read", False)
+                    read_by = [str(x) for x in uc.get("read_by", [])]
+                    is_unread = not uc_read or (str(current_student_id) not in read_by)
+                    if is_unread:
+                        target_l_id = chat_to_lesson_map.get(u_msg.chat_id, u_msg.chat_id)
+                        unread_counts[target_l_id] = unread_counts.get(target_l_id, 0) + 1
+        else:
+            lesson_ids = [l.lesson_id for l in lessons]
+            stmt_msg = (
+                select(Message)
+                .where(Message.chat_id.in_(lesson_ids))
+                .order_by(Message.chat_id, Message.created_at.desc())
+                .distinct(Message.chat_id)
+            )
+            res_msg = await db.execute(stmt_msg)
+            for msg in res_msg.scalars().all():
+                latest_messages[msg.chat_id] = msg
 
     # Resolve real teacher names from users table
     teachers_map: Dict[UUID, str] = {}
@@ -190,6 +202,10 @@ async def get_all_courses(
         t_name = teachers_map.get(l.teacher_id)
         is_enrolled = (l.lesson_id in enrolled_lesson_ids)
         has_pending = (l.lesson_id in pending_lesson_ids)
+
+        # If student requested enrolled_only, hide non-enrolled courses
+        if enrolled_only and current_student_id and not is_enrolled:
+            continue
 
         # Private courses are hidden unless the user is a teacher or already enrolled
         if not is_teacher and not l.is_public and not is_enrolled:

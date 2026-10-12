@@ -162,58 +162,187 @@ def get_request_timezone(request: Optional[Request] = None) -> ZoneInfo:
     return TEHRAN_TZ
 
 STUDENT_NAMESPACE = UUID("20000000-0000-4000-8000-000000000000")
+OS_COURSE_UUID = UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
+LEGACY_OS_UUID = UUID("c0000000-0000-4000-8000-000000000001")
+
+def is_os_course(course_uuid: Optional[UUID]) -> bool:
+    if course_uuid is None:
+        return True
+    return course_uuid in (OS_COURSE_UUID, LEGACY_OS_UUID)
+
+def resolve_course_uuid(course_id: Optional[str]) -> Optional[UUID]:
+    if not course_id:
+        return None
+    val_str = str(course_id).strip()
+    if val_str.lower() in ("os", "operating-systems"):
+        return OS_COURSE_UUID
+    try:
+        parsed = UUID(val_str)
+        if parsed == LEGACY_OS_UUID:
+            return OS_COURSE_UUID
+        return parsed
+    except Exception:
+        return None
 
 def resolve_target_uuid(chat_type: str, target_id_str: str) -> UUID:
-    if str(target_id_str).lower() in ("os", "operating-systems"):
-        return UUID("c0000000-0000-4000-8000-000000000001")
+    val_str = str(target_id_str).strip()
+    if val_str.lower() in ("os", "operating-systems"):
+        return OS_COURSE_UUID
     try:
-        return UUID(target_id_str)
+        parsed = UUID(val_str)
+        if parsed == LEGACY_OS_UUID:
+            return OS_COURSE_UUID
+        return parsed
     except Exception:
-        if str(target_id_str).isdigit():
-            val = int(target_id_str)
+        if val_str.isdigit():
+            val = int(val_str)
             return UUID(f"20000000-0000-4000-8000-{val:012d}")
         import uuid as _u
-        return _u.uuid5(STUDENT_NAMESPACE, f"{chat_type}:{target_id_str}")
+        return _u.uuid5(STUDENT_NAMESPACE, f"{chat_type}:{val_str}")
 
-async def _resolve_or_create_chat(db: AsyncSession, chat_type: str, target_id_str: str) -> UUID:
-    target_uuid = resolve_target_uuid(chat_type, target_id_str)
+async def resolve_student_course_chat_uuid(
+    db: AsyncSession,
+    student_uuid: UUID,
+    course_uuid: Optional[UUID] = None,
+) -> UUID:
+    target_course_uuid = course_uuid or OS_COURSE_UUID
+    if target_course_uuid == LEGACY_OS_UUID:
+        target_course_uuid = OS_COURSE_UUID
 
-    stmt = select(Chat).where(Chat.chat_id == target_uuid)
+    # 1. Check if mapping exists in lesson_bot_chats
+    candidate_course_ids = [OS_COURSE_UUID, LEGACY_OS_UUID] if is_os_course(target_course_uuid) else [target_course_uuid]
+    stmt = select(LessonBotChat).where(
+        LessonBotChat.student_id == student_uuid,
+        LessonBotChat.lesson_id.in_(candidate_course_ids)
+    )
+    res = await db.execute(stmt)
+    bot_chat = res.scalar_one_or_none()
+    if bot_chat:
+        return bot_chat.chat_id
+
+    # 2. Check if legacy messages exist directly under student_uuid
+    # If the target course is the OS course, legacy messages belong to the OS course
+    if is_os_course(target_course_uuid):
+        stmt_m = select(Message.message_id).where(Message.chat_id == student_uuid).limit(1)
+        res_m = await db.execute(stmt_m)
+        if res_m.scalar_one_or_none():
+            stmt_c = select(Chat).where(Chat.chat_id == student_uuid)
+            res_c = await db.execute(stmt_c)
+            if not res_c.scalar_one_or_none():
+                db.add(Chat(
+                    chat_id=student_uuid,
+                    chat_type="PRIVATE",
+                    title="Student Chat",
+                    is_public=False,
+                ))
+                await db.flush()
+
+            new_lbc = LessonBotChat(
+                lesson_id=OS_COURSE_UUID,
+                student_id=student_uuid,
+                chat_id=student_uuid,
+            )
+            db.add(new_lbc)
+            await db.flush()
+            return student_uuid
+
+    # 3. For any other course (e.g. Blockchain) or OS course without legacy messages:
+    deterministic_chat_id = uuid.uuid5(STUDENT_NAMESPACE, f"bot_chat:{student_uuid}:{target_course_uuid}")
+
+    stmt_c = select(Chat).where(Chat.chat_id == deterministic_chat_id)
+    res_c = await db.execute(stmt_c)
+    if not res_c.scalar_one_or_none():
+        stmt_l = select(Lesson).where(Lesson.lesson_id == target_course_uuid)
+        res_l = await db.execute(stmt_l)
+        lesson_obj = res_l.scalar_one_or_none()
+        c_title = f"چت درس {lesson_obj.title}" if lesson_obj else "Student Course Chat"
+        db.add(Chat(
+            chat_id=deterministic_chat_id,
+            chat_type="PRIVATE",
+            title=c_title,
+            is_public=False,
+        ))
+        await db.flush()
+
+    new_lbc = LessonBotChat(
+        lesson_id=target_course_uuid,
+        student_id=student_uuid,
+        chat_id=deterministic_chat_id,
+    )
+    db.add(new_lbc)
+    await db.flush()
+    return deterministic_chat_id
+
+async def _resolve_or_create_chat(
+    db: AsyncSession,
+    chat_type: str,
+    target_id_str: str,
+    course_id_param: Optional[str] = None,
+    request: Optional[Request] = None,
+) -> UUID:
+    # Check if target is a composite student-course id: "{student_id}_{course_id}"
+    if "_" in str(target_id_str):
+        parts = str(target_id_str).split("_", 1)
+        student_uuid = resolve_target_uuid("student", parts[0])
+        course_uuid = resolve_course_uuid(parts[1])
+        return await resolve_student_course_chat_uuid(db, student_uuid, course_uuid)
+
+    if chat_type == "student":
+        student_uuid = resolve_target_uuid("student", target_id_str)
+        course_uuid = resolve_course_uuid(course_id_param)
+        return await resolve_student_course_chat_uuid(db, student_uuid, course_uuid)
+
+    # If chat_type == "course": check if caller is an authenticated student
+    course_uuid = resolve_course_uuid(target_id_str) or OS_COURSE_UUID
+    current_student_id = None
+    if request:
+        auth_h = request.headers.get("Authorization")
+        if auth_h and auth_h.startswith("Bearer "):
+            try:
+                p = decode_token(auth_h.split(" ")[1])
+                if p.get("sub"):
+                    caller_uuid = UUID(p.get("sub"))
+                    res_u = await db.execute(select(User).where(User.user_id == caller_uuid))
+                    u_obj = res_u.scalar_one_or_none()
+                    if u_obj and u_obj.user_type == "STUDENT":
+                        current_student_id = caller_uuid
+            except Exception:
+                pass
+
+    if current_student_id:
+        return await resolve_student_course_chat_uuid(db, current_student_id, course_uuid)
+
+    stmt = select(Chat).where(Chat.chat_id == course_uuid)
     res = await db.execute(stmt)
     chat = res.scalar_one_or_none()
 
     if not chat:
-        if chat_type == "course":
-            stmt_lesson = select(Lesson).where(Lesson.lesson_id == target_uuid)
-            res_lesson = await db.execute(stmt_lesson)
-            lesson = res_lesson.scalar_one_or_none()
-            title = lesson.title if lesson else "Course Chat"
-        else:
-            stmt_user = select(User).where(User.user_id == target_uuid)
-            res_user = await db.execute(stmt_user)
-            user = res_user.scalar_one_or_none()
-            title = f"{user.first_name or ''} {user.last_name or ''}".strip() if user else "Student Chat"
+        stmt_lesson = select(Lesson).where(Lesson.lesson_id == course_uuid)
+        res_lesson = await db.execute(stmt_lesson)
+        lesson = res_lesson.scalar_one_or_none()
+        title = lesson.title if lesson else "Course Chat"
 
         chat = Chat(
-            chat_id=target_uuid,
-            chat_type="COURSE" if chat_type == "course" else "PRIVATE",
+            chat_id=course_uuid,
+            chat_type="COURSE",
             title=title,
             is_public=False,
         )
         db.add(chat)
         await db.flush()
 
-    return target_uuid
+    return course_uuid
 
 
 @router.get("/{chat_type}/{target_id}/messages", response_model=List[ChatMessageItem])
 async def get_persisted_chat_history(
     chat_type: str,
     target_id: str,
+    course_id: Optional[str] = Query(None),
     request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
-    chat_id = await _resolve_or_create_chat(db, chat_type, target_id)
+    chat_id = await _resolve_or_create_chat(db, chat_type, target_id, course_id_param=course_id, request=request)
     tz = get_request_timezone(request)
 
     stmt = (
@@ -289,12 +418,20 @@ async def send_chat_message_with_rag(
     chat_type: str,
     target_id: str,
     payload: ChatHistoryMessageCreate,
+    course_id: Optional[str] = Query(None),
     request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
-    target_uuid = resolve_target_uuid(chat_type, target_id)
-    if chat_type == "course":
-        stmt_l = select(Lesson).where(Lesson.lesson_id == target_uuid)
+    target_course_uuid = None
+    if "_" in str(target_id):
+        target_course_uuid = resolve_course_uuid(str(target_id).split("_", 1)[1])
+    elif course_id:
+        target_course_uuid = resolve_course_uuid(course_id)
+    elif chat_type == "course":
+        target_course_uuid = resolve_course_uuid(target_id)
+
+    if target_course_uuid:
+        stmt_l = select(Lesson).where(Lesson.lesson_id == target_course_uuid)
         res_l = await db.execute(stmt_l)
         lesson_obj = res_l.scalar_one_or_none()
         if lesson_obj and lesson_obj.is_active is False:
@@ -318,7 +455,7 @@ async def send_chat_message_with_rag(
                         detail="این درس توسط استاد غیرفعال شده است و امکان ارسال پیام وجود ندارد.",
                     )
 
-    chat_id = await _resolve_or_create_chat(db, chat_type, target_id)
+    chat_id = await _resolve_or_create_chat(db, chat_type, target_id, course_id_param=course_id, request=request)
     tz = get_request_timezone(request)
     now = datetime.now(timezone.utc)
     user_local_now = now.astimezone(tz)
@@ -349,17 +486,28 @@ async def send_chat_message_with_rag(
     if not ai_text:
         try:
             timeout = settings.RAG_TIMEOUT_SECONDS
+            rag_course_name = (payload.courseName or "").strip()
+            if not rag_course_name and target_course_uuid:
+                stmt_l = select(Lesson).where(Lesson.lesson_id == target_course_uuid)
+                res_l = await db.execute(stmt_l)
+                l_obj = res_l.scalar_one_or_none()
+                if l_obj and l_obj.title:
+                    rag_course_name = l_obj.title
+            if not rag_course_name:
+                rag_course_name = "سیستم عامل"
+
             form_data = {
                 "query": payload.text,
                 "contexts": "",
                 "language": payload.language or "fa",
-                "courseName": payload.courseName or "سیستم عامل",
+                "courseName": rag_course_name,
                 "teacherName": "Teacher",
             }
             logger.info(
-                ">>> [RAG/LLM REQUEST] Sending chat question to: %s | Query: \"%s\"",
+                ">>> [RAG/LLM REQUEST] Sending chat question to: %s | Query: \"%s\" | Course: \"%s\"",
                 settings.RAG_API_URL,
                 (payload.text[:100] + "...") if len(payload.text) > 100 else payload.text,
+                rag_course_name,
             )
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(settings.RAG_API_URL, data=form_data)
@@ -696,10 +844,15 @@ async def get_student_unread_comments_summary(
         request = None
     student_uuid = resolve_target_uuid("student", student_id)
     tz = get_request_timezone(request)
+
+    stmt_lbc = select(LessonBotChat.chat_id).where(LessonBotChat.student_id == student_uuid)
+    res_lbc = await db.execute(stmt_lbc)
+    bot_chat_ids = list(res_lbc.scalars().all())
+
     course_stmt = select(Chat.chat_id).where(Chat.chat_type == "COURSE")
     course_res = await db.execute(course_stmt)
     course_ids = list(course_res.scalars().all())
-    allowed_chat_ids = [student_uuid] + course_ids
+    allowed_chat_ids = list(set([student_uuid] + bot_chat_ids + course_ids))
 
     stmt = (
         select(Message)
@@ -727,7 +880,7 @@ async def get_student_unread_comments_summary(
                 continue
             read_by = [str(x) for x in c.get("read_by", [])]
             is_read = bool(c.get("is_read", False))
-            if msg.chat_id == student_uuid:
+            if msg.chat_id == student_uuid or msg.chat_id in bot_chat_ids:
                 is_already_read = is_read or (student_id and str(student_id) in read_by)
             else:
                 is_already_read = (student_id and str(student_id) in read_by) or is_read
@@ -770,9 +923,11 @@ async def get_student_unread_comments_summary(
 async def clear_chat_history(
     chat_type: str,
     target_id: str,
+    course_id: Optional[str] = Query(None),
+    request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
-    chat_id = await _resolve_or_create_chat(db, chat_type, target_id)
+    chat_id = await _resolve_or_create_chat(db, chat_type, target_id, course_id_param=course_id, request=request)
     stmt = delete(Message).where(Message.chat_id == chat_id)
     await db.execute(stmt)
     await db.commit()

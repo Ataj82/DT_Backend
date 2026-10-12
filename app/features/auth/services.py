@@ -214,9 +214,14 @@ class AuthService:
                 username = "admin"
 
         user = None
-        if username:
+        if role_raw == "TEACHER":
+            CANONICAL_TEACHER_UUID = UUID("10000000-0000-4000-8000-000000000001")
+            stmt_canon = select(User).where(User.user_id == CANONICAL_TEACHER_UUID)
+            res_canon = await self.db.execute(stmt_canon)
+            user = res_canon.scalar_one_or_none()
+
+        if not user and username:
             try:
-                from uuid import UUID
                 parsed_uid = UUID(str(username))
                 stmt_uid = select(User).where(User.user_id == parsed_uid)
                 res_uid = await self.db.execute(stmt_uid)
