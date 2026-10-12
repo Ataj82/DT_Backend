@@ -201,25 +201,26 @@ def _detect_single_frame_face(test_img: np.ndarray, preferred_detector: str = "o
             img_h, img_w = test_img.shape[:2]
             total_img_area = img_h * img_w
             for cascade in cascades:
-                faces = cascade.detectMultiScale(
-                    gray_clahe,
-                    scaleFactor=1.1,
-                    minNeighbors=4,
-                    minSize=(40, 40)
-                )
-                if len(faces) > 0:
-                    max_box_area = max(fw * fh for (_, _, fw, fh) in faces)
-                    filtered_faces = [
-                        (fx, fy, fw, fh) for (fx, fy, fw, fh) in faces
-                        if (fw * fh >= max_box_area * 0.20) and (fw * fh >= total_img_area * 0.010)
-                    ]
-                    if filtered_faces:
-                        face_objs = [
-                            {"facial_area": {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}}
-                            for (fx, fy, fw, fh) in filtered_faces
+                for sf, mn in [(1.1, 4), (1.05, 3)]:
+                    faces = cascade.detectMultiScale(
+                        gray_clahe,
+                        scaleFactor=sf,
+                        minNeighbors=mn,
+                        minSize=(36, 36)
+                    )
+                    if len(faces) > 0:
+                        max_box_area = max(fw * fh for (_, _, fw, fh) in faces)
+                        filtered_faces = [
+                            (fx, fy, fw, fh) for (fx, fy, fw, fh) in faces
+                            if (fw * fh >= max_box_area * 0.20) and (fw * fh >= total_img_area * 0.008)
                         ]
-                        chosen_detector = "opencv"
-                        return face_objs, chosen_detector
+                        if filtered_faces:
+                            face_objs = [
+                                {"facial_area": {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}}
+                                for (fx, fy, fw, fh) in filtered_faces
+                            ]
+                            chosen_detector = "opencv"
+                            return face_objs, chosen_detector
         except Exception as e:
             print(f"[biometrics] Cascade detection fallback error: {e}")
 

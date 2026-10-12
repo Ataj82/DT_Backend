@@ -23,8 +23,17 @@ from .db_models import UserBiometricProfile
 def _get_async_session():
     try:
         from app.core.database import async_session
+        import app.features.users.models  # noqa
+        import app.features.lessons.models  # noqa
+        import app.features.chat.models  # noqa
+        import app.features.auth.models  # noqa
+        import app.features.bot.models  # noqa
+        import app.features.biometrics.db_models  # noqa
+        from sqlalchemy.orm import configure_mappers
+        configure_mappers()
         return async_session
     except Exception as e:
+        print(f"[biometrics-db] Warning: mapper config error: {e}")
         return None
 
 # L1 In-memory vector and profile cache

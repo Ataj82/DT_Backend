@@ -179,6 +179,34 @@ async def verify_face(
             enrolled_embedding = db_profile.face_embedding
 
     if enrolled_embedding is None:
+        try:
+            from .database import _get_async_session
+            async_session_factory = _get_async_session()
+            if async_session_factory:
+                async with async_session_factory() as session:
+                    res = await session.execute(
+                        select(UserBiometricProfile).where(
+                            UserBiometricProfile.is_enrolled == True,
+                            UserBiometricProfile.face_embedding.isnot(None)
+                        )
+                    )
+                    all_enrolled = res.scalars().all()
+                    for ep in all_enrolled:
+                        if ep.user_id:
+                            from .database import VECTOR_DATABASE, STUDENT_PROFILES
+                            VECTOR_DATABASE[str(ep.user_id)] = ep.face_embedding
+                            STUDENT_PROFILES[str(ep.user_id)] = ep.to_dict()
+                            if ep.user_id == uid or (uid in str(ep.user_id)) or (str(ep.user_id) in uid):
+                                enrolled_embedding = ep.face_embedding
+                                uid = str(ep.user_id)
+                                break
+                    if enrolled_embedding is None and len(all_enrolled) == 1:
+                        enrolled_embedding = all_enrolled[0].face_embedding
+                        uid = str(all_enrolled[0].user_id)
+        except Exception as e:
+            print(f"[biometrics] Candidate resolution error: {e}")
+
+    if enrolled_embedding is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"User '{uid}' is not enrolled. Please enroll first."
