@@ -149,6 +149,27 @@ async def persist_biometric_profile_db(user_id: str, **kwargs) -> Optional[UserB
             profile_obj = result.scalar_one_or_none()
 
             if profile_obj is None:
+                from app.features.users.models import User
+                from uuid import UUID
+                try:
+                    parsed_uuid = UUID(uid)
+                    u_stmt = select(User).where(User.user_id == parsed_uuid)
+                    u_res = await session.execute(u_stmt)
+                    u_obj = u_res.scalar_one_or_none()
+                    if u_obj and u_obj.username:
+                        stmt2 = select(UserBiometricProfile).where(UserBiometricProfile.user_id == u_obj.username)
+                        res2 = await session.execute(stmt2)
+                        profile_obj = res2.scalar_one_or_none()
+                except ValueError:
+                    u_stmt = select(User).where(User.username == uid)
+                    u_res = await session.execute(u_stmt)
+                    u_obj = u_res.scalar_one_or_none()
+                    if u_obj:
+                        stmt2 = select(UserBiometricProfile).where(UserBiometricProfile.user_id == str(u_obj.user_id))
+                        res2 = await session.execute(stmt2)
+                        profile_obj = res2.scalar_one_or_none()
+
+            if profile_obj is None:
                 profile_obj = UserBiometricProfile(user_id=uid)
                 session.add(profile_obj)
 
@@ -242,6 +263,32 @@ async def save_face_embedding_async(user_id: str, embedding: List[float], livene
         liveness_status=liveness_mode
     )
     await cache_biometric_profile(uid, STUDENT_PROFILES[uid])
+
+    # Cross-link alias in memory (UUID <-> username)
+    session_factory = _get_async_session()
+    if session_factory:
+        try:
+            from app.features.users.models import User
+            from uuid import UUID
+            async with session_factory() as session:
+                try:
+                    parsed_uuid = UUID(uid)
+                    u_stmt = select(User).where(User.user_id == parsed_uuid)
+                    u_res = await session.execute(u_stmt)
+                    u_obj = u_res.scalar_one_or_none()
+                    if u_obj and u_obj.username:
+                        VECTOR_DATABASE[u_obj.username] = embedding
+                        STUDENT_PROFILES[u_obj.username] = STUDENT_PROFILES[uid]
+                except ValueError:
+                    u_stmt = select(User).where(User.username == uid)
+                    u_res = await session.execute(u_stmt)
+                    u_obj = u_res.scalar_one_or_none()
+                    if u_obj:
+                        alt_id = str(u_obj.user_id)
+                        VECTOR_DATABASE[alt_id] = embedding
+                        STUDENT_PROFILES[alt_id] = STUDENT_PROFILES[uid]
+        except Exception:
+            pass
 
 
 def save_face_embedding(user_id: str, embedding: List[float]) -> None:

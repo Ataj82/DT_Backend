@@ -289,8 +289,8 @@ def process_live_frame(
             else:
                 w, h = 0, 0
             area = w * h
-            # Accept if face area is at least 20% of the largest face, at least 1.0% of image, and confidence >= 0.40
-            if area >= max(max_area * 0.20, total_img_area * 0.010) and (conf is None or conf >= 0.40):
+            # Accept if face area is at least 20% of the largest face, at least 0.6% of image, and confidence >= 0.35
+            if area >= max(max_area * 0.20, total_img_area * 0.006) and (conf is None or conf >= 0.35):
                 valid_faces.append(f)
 
         if len(valid_faces) == 0:
