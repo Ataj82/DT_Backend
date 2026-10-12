@@ -259,6 +259,19 @@ async def register_gaze_calibration(payload: CalibrationPayload):
             detail=f"At least 5 calibration samples required, got {len(payload.samples)}."
         )
 
+    for idx, s in enumerate(payload.samples):
+        feat = np.array(s.features, dtype=np.float64)
+        if len(feat) < 7:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Sample {idx + 1} has invalid feature dimensions ({len(feat)} < 7)."
+            )
+        if np.all(np.abs(feat) < 1e-6):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Sample {idx + 1} contains degenerate empty features (no face detected)."
+            )
+
     features = np.array([s.features for s in payload.samples], dtype=np.float64)
     targets = np.array([s.target_norm for s in payload.samples], dtype=np.float64)
 
@@ -276,6 +289,12 @@ async def register_gaze_calibration(payload: CalibrationPayload):
             calibrator.weights.tolist(),
             len(payload.samples)
         )
+
+    print(
+        f"👁️ [GAZE-CALIBRATION-SUCCESS] 👤 User: {uid} | Points: {len(payload.samples)} | "
+        f"Ridge Regression model successfully fit and persisted.",
+        flush=True
+    )
 
     return {
         "status": "success",
@@ -468,6 +487,29 @@ async def process_telemetry_frame_endpoint(
 
         telemetry_data["record_id"] = record_id
         telemetry_data["user_id"] = uid
+
+        attn_score = float(telemetry_data.get("attention_score") if telemetry_data.get("attention_score") is not None else 0.0)
+        face_detected = bool(telemetry_data.get("face_detected", False))
+        gaze_dir = telemetry_data.get("gaze_direction") or ("Direct" if face_detected else "Out of Frame")
+        stress = float(telemetry_data.get("stress_score") if telemetry_data.get("stress_score") is not None else 0.0)
+        mood = telemetry_data.get("dominant_emotion") or "neutral"
+        attn_status = telemetry_data.get("attention_status") or ("Focused" if attn_score >= 65 else "Distracted")
+
+        if not face_detected:
+            status_tag = "🔴 [NO FACE IN FRAME]"
+        elif attn_score < 40 or "Away" in gaze_dir or "Out of Frame" in gaze_dir:
+            status_tag = "🔴 [LOOKING AWAY / CRITICAL]"
+        elif attn_score < 65 or gaze_dir not in ["Direct", "Direct / Center", "Screen", "Forward", "Center"]:
+            status_tag = "🟡 [SLIGHT DEVIATION / WARNING]"
+        else:
+            status_tag = "🟢 [FOCUSED / OPTIMAL]"
+
+        print(
+            f"🎯 [EXAM-LIVE-TELEMETRY] 👤 Student: {uid} | "
+            f"Accuracy/Focus: {attn_score:.1f}% | {status_tag} | "
+            f"👁️ Gaze: {gaze_dir} | 🧠 Stress: {stress:.1f}% | 🎭 Mood: {mood}",
+            flush=True
+        )
 
         # Real-time server-side buffering of 7D neutral features into Redis session
         au = telemetry_data.get("action_units") or {}

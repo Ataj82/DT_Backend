@@ -704,6 +704,14 @@ async def launch_my_assignment(
         enrollment = service.mark_started(student=student, assignment_id=assignment_id)
         runtime = service.interview_service.start_interview(enrollment.session_id)
 
+        print(
+            f"\n🎓 ===================================================================\n"
+            f"🚀 [EXAM-STARTED] Student: {student.id} ({getattr(student, 'username', 'N/A')}) | "
+            f"Assignment: {assignment_id} | Session: {enrollment.session_id}\n"
+            f"🎓 ===================================================================\n",
+            flush=True
+        )
+
         # Check if interview is already completed or duration expired
         is_completed = runtime.completed or runtime._time_expired()
         if is_completed:

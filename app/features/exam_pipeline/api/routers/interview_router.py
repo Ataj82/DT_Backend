@@ -222,6 +222,13 @@ def start_interview(
             # first question or reject the first answer as stale.
             service.save(runtime.session)
 
+            print(
+                f"\n🎓 ===================================================================\n"
+                f"🚀 [INTERVIEW-SESSION-STARTED] Session: {session_id} | Student: {getattr(runtime.session, 'student_id', 'N/A')}\n"
+                f"🎓 ===================================================================\n",
+                flush=True
+            )
+
     except ValueError as exc:
         raise _not_found(str(exc)) from exc
 
