@@ -136,7 +136,7 @@ async def get_cached_biometric_profile(user_id: str) -> Optional[Dict[str, Any]]
 
 async def persist_biometric_profile_db(user_id: str, **kwargs) -> Optional[UserBiometricProfile]:
     """
-    Saves or updates the persistent biometric profile in PostgreSQL.
+    Saves or updates the persistent biometric profile in PostgreSQL for both UID and its alias.
     """
     session_factory = _get_async_session()
     if not session_factory:
@@ -144,43 +144,47 @@ async def persist_biometric_profile_db(user_id: str, **kwargs) -> Optional[UserB
     uid = user_id.strip()
     try:
         async with session_factory() as session:
-            stmt = select(UserBiometricProfile).where(UserBiometricProfile.user_id == uid)
-            result = await session.execute(stmt)
-            profile_obj = result.scalar_one_or_none()
+            from app.features.users.models import User
+            from uuid import UUID
 
-            if profile_obj is None:
-                from app.features.users.models import User
-                from uuid import UUID
-                try:
-                    parsed_uuid = UUID(uid)
-                    u_stmt = select(User).where(User.user_id == parsed_uuid)
-                    u_res = await session.execute(u_stmt)
-                    u_obj = u_res.scalar_one_or_none()
-                    if u_obj and u_obj.username:
-                        stmt2 = select(UserBiometricProfile).where(UserBiometricProfile.user_id == u_obj.username)
-                        res2 = await session.execute(stmt2)
-                        profile_obj = res2.scalar_one_or_none()
-                except ValueError:
-                    u_stmt = select(User).where(User.username == uid)
-                    u_res = await session.execute(u_stmt)
-                    u_obj = u_res.scalar_one_or_none()
-                    if u_obj:
-                        stmt2 = select(UserBiometricProfile).where(UserBiometricProfile.user_id == str(u_obj.user_id))
-                        res2 = await session.execute(stmt2)
-                        profile_obj = res2.scalar_one_or_none()
+            # Identify target IDs to update (both uid and its user table alias)
+            target_ids = [uid]
+            try:
+                parsed_uuid = UUID(uid)
+                u_stmt = select(User).where(User.user_id == parsed_uuid)
+                u_res = await session.execute(u_stmt)
+                u_obj = u_res.scalar_one_or_none()
+                if u_obj and u_obj.username:
+                    target_ids.append(u_obj.username)
+            except ValueError:
+                u_stmt = select(User).where(User.username == uid)
+                u_res = await session.execute(u_stmt)
+                u_obj = u_res.scalar_one_or_none()
+                if u_obj:
+                    target_ids.append(str(u_obj.user_id))
 
-            if profile_obj is None:
-                profile_obj = UserBiometricProfile(user_id=uid)
-                session.add(profile_obj)
+            primary_profile = None
+            now_dt = datetime.utcnow()
+            for tid in set(target_ids):
+                stmt = select(UserBiometricProfile).where(UserBiometricProfile.user_id == tid)
+                res = await session.execute(stmt)
+                p_obj = res.scalar_one_or_none()
+                if p_obj is None:
+                    p_obj = UserBiometricProfile(user_id=tid)
+                    session.add(p_obj)
+                for key, val in kwargs.items():
+                    if hasattr(p_obj, key):
+                        setattr(p_obj, key, val)
+                p_obj.updated_at = now_dt
+                if tid == uid:
+                    primary_profile = p_obj
+                elif primary_profile is None:
+                    primary_profile = p_obj
 
-            for key, val in kwargs.items():
-                if hasattr(profile_obj, key):
-                    setattr(profile_obj, key, val)
-
-            profile_obj.updated_at = datetime.utcnow()
             await session.commit()
-            await session.refresh(profile_obj)
-            return profile_obj
+            if primary_profile:
+                await session.refresh(primary_profile)
+            return primary_profile
     except Exception as e:
         print(f"[biometrics-db] Warning: PostgreSQL profile persist error: {e}")
         return None
@@ -197,35 +201,49 @@ async def get_biometric_profile_db(user_id: str) -> Optional[UserBiometricProfil
             stmt = select(UserBiometricProfile).where(UserBiometricProfile.user_id == uid)
             result = await session.execute(stmt)
             profile = result.scalar_one_or_none()
-            if profile:
+            if profile and profile.is_enrolled and profile.face_embedding:
                 return profile
 
             # Cross-reference with users table (UUID <-> username)
             from app.features.users.models import User
             from uuid import UUID
+            alias_id = None
             try:
                 parsed_uuid = UUID(uid)
                 u_stmt = select(User).where(User.user_id == parsed_uuid)
                 u_res = await session.execute(u_stmt)
                 u_obj = u_res.scalar_one_or_none()
                 if u_obj and u_obj.username:
-                    stmt2 = select(UserBiometricProfile).where(UserBiometricProfile.user_id == u_obj.username)
-                    res2 = await session.execute(stmt2)
-                    p2 = res2.scalar_one_or_none()
-                    if p2:
-                        return p2
+                    alias_id = u_obj.username
             except ValueError:
                 u_stmt = select(User).where(User.username == uid)
                 u_res = await session.execute(u_stmt)
                 u_obj = u_res.scalar_one_or_none()
                 if u_obj:
-                    stmt2 = select(UserBiometricProfile).where(UserBiometricProfile.user_id == str(u_obj.user_id))
-                    res2 = await session.execute(stmt2)
-                    p2 = res2.scalar_one_or_none()
-                    if p2:
-                        return p2
+                    alias_id = str(u_obj.user_id)
 
-            return None
+            if alias_id:
+                stmt2 = select(UserBiometricProfile).where(UserBiometricProfile.user_id == alias_id)
+                res2 = await session.execute(stmt2)
+                p2 = res2.scalar_one_or_none()
+                if p2 and p2.is_enrolled and p2.face_embedding:
+                    # Sync to profile in background/session if profile exists
+                    if profile and not profile.is_enrolled:
+                        profile.is_enrolled = p2.is_enrolled
+                        profile.enrolled_at = p2.enrolled_at
+                        profile.face_embedding = p2.face_embedding
+                        profile.liveness_status = p2.liveness_status
+                        profile.is_gaze_calibrated = p2.is_gaze_calibrated
+                        profile.gaze_weights = p2.gaze_weights
+                        profile.is_neutral_calibrated = p2.is_neutral_calibrated
+                        profile.neutral_baseline_mean = p2.neutral_baseline_mean
+                        profile.neutral_baseline_std = p2.neutral_baseline_std
+                        await session.commit()
+                    return p2
+                if p2 and not profile:
+                    profile = p2
+
+            return profile
     except Exception as e:
         print(f"[biometrics-db] Warning: PostgreSQL get profile error: {e}")
         return None

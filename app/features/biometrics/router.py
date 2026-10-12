@@ -184,6 +184,21 @@ async def verify_face(
             async_session_factory = _get_async_session()
             if async_session_factory:
                 async with async_session_factory() as session:
+                    from app.features.users.models import User
+                    from uuid import UUID
+                    u_cand_ids = [uid]
+                    try:
+                        p_uuid = UUID(uid)
+                        u_res = await session.execute(select(User).where(User.user_id == p_uuid))
+                        u_match = u_res.scalar_one_or_none()
+                        if u_match and u_match.username:
+                            u_cand_ids.append(u_match.username)
+                    except ValueError:
+                        u_res = await session.execute(select(User).where(User.username == uid))
+                        u_match = u_res.scalar_one_or_none()
+                        if u_match:
+                            u_cand_ids.append(str(u_match.user_id))
+
                     res = await session.execute(
                         select(UserBiometricProfile).where(
                             UserBiometricProfile.is_enrolled == True,
@@ -192,11 +207,11 @@ async def verify_face(
                     )
                     all_enrolled = res.scalars().all()
                     for ep in all_enrolled:
-                        if ep.user_id:
+                        if ep.user_id and ep.face_embedding:
                             from .database import VECTOR_DATABASE, STUDENT_PROFILES
                             VECTOR_DATABASE[str(ep.user_id)] = ep.face_embedding
                             STUDENT_PROFILES[str(ep.user_id)] = ep.to_dict()
-                            if ep.user_id == uid or (uid in str(ep.user_id)) or (str(ep.user_id) in uid):
+                            if ep.user_id in u_cand_ids or any(cid in str(ep.user_id) for cid in u_cand_ids):
                                 enrolled_embedding = ep.face_embedding
                                 uid = str(ep.user_id)
                                 break
