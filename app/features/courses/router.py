@@ -26,8 +26,9 @@ from .schemas import (
 
 router = APIRouter()
 
-OS_COURSE_UUID = UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
-LEGACY_OS_UUID = UUID("c0000000-0000-4000-8000-000000000001")
+OS_COURSE_UUID = UUID("c0000000-0000-4000-8000-000000000001")
+FRONTEND_OS_UUID = UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
+LEGACY_OS_UUID = FRONTEND_OS_UUID
 
 COURSE_METADATA = {
     OS_COURSE_UUID: {
@@ -37,7 +38,7 @@ COURSE_METADATA = {
         "department": "مهندسی کامپیوتر",
         "term": "نیم‌سال دوم ۱۴۰۴-۱۴۰۵",
     },
-    LEGACY_OS_UUID: {
+    FRONTEND_OS_UUID: {
         "degree": "کارشناسی",
         "units": 3,
         "course_code": "۲۱۱۰۰۱۲",
@@ -45,6 +46,11 @@ COURSE_METADATA = {
         "term": "نیم‌سال دوم ۱۴۰۴-۱۴۰۵",
     },
 }
+
+def get_candidate_course_ids(resolved_id: UUID) -> List[UUID]:
+    if resolved_id in (OS_COURSE_UUID, FRONTEND_OS_UUID):
+        return [OS_COURSE_UUID, FRONTEND_OS_UUID]
+    return [resolved_id]
 
 def get_course_meta(lesson: Lesson) -> dict:
     meta = COURSE_METADATA.get(lesson.lesson_id, {})
@@ -62,7 +68,7 @@ def resolve_course_uuid(course_id: str) -> UUID:
         return OS_COURSE_UUID
     try:
         parsed = UUID(val_str)
-        if parsed == LEGACY_OS_UUID:
+        if parsed in (FRONTEND_OS_UUID, OS_COURSE_UUID):
             return OS_COURSE_UUID
         return parsed
     except ValueError:
@@ -273,7 +279,7 @@ async def get_course_by_id(
     db: AsyncSession = Depends(get_db),
 ):
     resolved_id = resolve_course_uuid(course_id)
-    stmt = select(Lesson).where(Lesson.lesson_id == resolved_id)
+    stmt = select(Lesson).where(Lesson.lesson_id.in_(get_candidate_course_ids(resolved_id)))
     result = await db.execute(stmt)
     lesson = result.scalar_one_or_none()
 
@@ -341,15 +347,16 @@ async def get_course_by_id(
     is_enrolled = False
     has_pending = False
     if current_student_id:
+        candidate_ids = get_candidate_course_ids(lesson.lesson_id)
         stmt_mem = select(LessonMember).where(
-            LessonMember.lesson_id == resolved_id,
+            LessonMember.lesson_id.in_(candidate_ids),
             LessonMember.user_id == current_student_id
         )
         res_mem = await db.execute(stmt_mem)
         is_enrolled = res_mem.scalar_one_or_none() is not None
 
         stmt_pnd = select(ChatJoinRequest).where(
-            ChatJoinRequest.chat_id == resolved_id,
+            ChatJoinRequest.chat_id.in_(candidate_ids),
             ChatJoinRequest.user_id == current_student_id,
             ChatJoinRequest.status == "PENDING"
         )
@@ -384,7 +391,8 @@ async def join_or_request_course(
     db: AsyncSession = Depends(get_db),
 ):
     resolved_id = resolve_course_uuid(course_id)
-    stmt = select(Lesson).where(Lesson.lesson_id == resolved_id)
+    candidate_ids = get_candidate_course_ids(resolved_id)
+    stmt = select(Lesson).where(Lesson.lesson_id.in_(candidate_ids))
     result = await db.execute(stmt)
     lesson = result.scalar_one_or_none()
 
@@ -421,7 +429,7 @@ async def join_or_request_course(
 
     # Check if already enrolled
     stmt_mem = select(LessonMember).where(
-        LessonMember.lesson_id == resolved_id,
+        LessonMember.lesson_id.in_(candidate_ids),
         LessonMember.user_id == current_user_id
     )
     res_mem = await db.execute(stmt_mem)
@@ -431,16 +439,16 @@ async def join_or_request_course(
             success=True,
             status="enrolled",
             message="شما در حال حاضر عضو این درس هستید.",
-            course_id=resolved_id,
+            course_id=lesson.lesson_id,
         )
 
     # Ensure a corresponding Chat row exists (chat_join_requests references chats.chat_id)
-    stmt_c = select(Chat).where(Chat.chat_id == resolved_id)
+    stmt_c = select(Chat).where(Chat.chat_id.in_(candidate_ids))
     res_c = await db.execute(stmt_c)
     chat = res_c.scalar_one_or_none()
     if not chat:
         chat = Chat(
-            chat_id=resolved_id,
+            chat_id=lesson.lesson_id,
             chat_type="COURSE",
             title=lesson.title,
             is_public=lesson.is_public,
@@ -450,7 +458,7 @@ async def join_or_request_course(
 
     # Create or verify pending join request (both public and private courses require teacher approval)
     stmt_req = select(ChatJoinRequest).where(
-        ChatJoinRequest.chat_id == resolved_id,
+        ChatJoinRequest.chat_id.in_(candidate_ids),
         ChatJoinRequest.user_id == current_user_id,
         ChatJoinRequest.status == "PENDING"
     )
@@ -461,11 +469,11 @@ async def join_or_request_course(
             success=True,
             status="pending",
             message="درخواست عضویت شما قبلاً ارسال شده و در انتظار تأیید استاد است.",
-            course_id=resolved_id,
+            course_id=lesson.lesson_id,
         )
 
     join_req = ChatJoinRequest(
-        chat_id=resolved_id,
+        chat_id=lesson.lesson_id,
         user_id=current_user_id,
         status="PENDING",
     )
@@ -482,7 +490,7 @@ async def join_or_request_course(
 @router.get("/{course_id}/details", response_model=CourseDetailResponse)
 async def get_course_details(course_id: str, db: AsyncSession = Depends(get_db)):
     resolved_id = resolve_course_uuid(course_id)
-    stmt = select(Lesson).where(Lesson.lesson_id == resolved_id)
+    stmt = select(Lesson).where(Lesson.lesson_id.in_(get_candidate_course_ids(resolved_id)))
     result = await db.execute(stmt)
     lesson = result.scalar_one_or_none()
 
@@ -529,7 +537,7 @@ async def update_course_details(
     db: AsyncSession = Depends(get_db),
 ):
     resolved_id = resolve_course_uuid(course_id)
-    stmt = select(Lesson).where(Lesson.lesson_id == resolved_id)
+    stmt = select(Lesson).where(Lesson.lesson_id.in_(get_candidate_course_ids(resolved_id)))
     result = await db.execute(stmt)
     lesson = result.scalar_one_or_none()
 
@@ -571,7 +579,7 @@ async def update_course_details(
 
     return {
         "success": True,
-        "courseId": resolved_id,
+        "courseId": lesson.lesson_id,
         "isActive": lesson.is_active,
         "is_active": lesson.is_active,
         "data": payload.model_dump(exclude_none=True),
@@ -584,7 +592,7 @@ async def update_course_status(
     db: AsyncSession = Depends(get_db),
 ):
     resolved_id = resolve_course_uuid(course_id)
-    stmt = select(Lesson).where(Lesson.lesson_id == resolved_id)
+    stmt = select(Lesson).where(Lesson.lesson_id.in_(get_candidate_course_ids(resolved_id)))
     result = await db.execute(stmt)
     lesson = result.scalar_one_or_none()
 
@@ -602,7 +610,7 @@ async def update_course_status(
 
     return {
         "success": True,
-        "courseId": resolved_id,
+        "courseId": lesson.lesson_id,
         "isActive": lesson.is_active,
         "is_active": lesson.is_active,
     }
@@ -617,7 +625,8 @@ async def upload_course_photo(
     db: AsyncSession = Depends(get_db),
 ):
     resolved_id = resolve_course_uuid(course_id)
-    stmt = select(Lesson).where(Lesson.lesson_id == resolved_id)
+    candidate_ids = get_candidate_course_ids(resolved_id)
+    stmt = select(Lesson).where(Lesson.lesson_id.in_(candidate_ids))
     result = await db.execute(stmt)
     lesson = result.scalar_one_or_none()
 
@@ -653,7 +662,7 @@ async def upload_course_photo(
     upload_dir = Path("uploads/avatars")
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = f"course_{resolved_id}_{uuid4().hex[:12]}{ext}"
+    filename = f"course_{lesson.lesson_id}_{uuid4().hex[:12]}{ext}"
     file_path = upload_dir / filename
     with open(file_path, "wb") as f:
         f.write(content)
@@ -662,14 +671,14 @@ async def upload_course_photo(
     lesson.avatar_url = photo_url
 
     # Also update or create Chat entry
-    stmt_chat = select(Chat).where(Chat.chat_id == resolved_id)
+    stmt_chat = select(Chat).where(Chat.chat_id.in_(candidate_ids))
     res_chat = await db.execute(stmt_chat)
     chat = res_chat.scalar_one_or_none()
     if chat:
         chat.avatar_url = photo_url
     else:
         chat = Chat(
-            chat_id=resolved_id,
+            chat_id=lesson.lesson_id,
             chat_type="COURSE",
             title=lesson.title,
             avatar_url=photo_url,
@@ -682,7 +691,7 @@ async def upload_course_photo(
 
     return {
         "success": True,
-        "courseId": resolved_id,
+        "courseId": lesson.lesson_id,
         "photo_url": photo_url,
     }
 
@@ -692,7 +701,8 @@ async def delete_course_photo(
     db: AsyncSession = Depends(get_db),
 ):
     resolved_id = resolve_course_uuid(course_id)
-    stmt = select(Lesson).where(Lesson.lesson_id == resolved_id)
+    candidate_ids = get_candidate_course_ids(resolved_id)
+    stmt = select(Lesson).where(Lesson.lesson_id.in_(candidate_ids))
     result = await db.execute(stmt)
     lesson = result.scalar_one_or_none()
 
@@ -705,7 +715,7 @@ async def delete_course_photo(
     old_url = lesson.avatar_url
     lesson.avatar_url = None
 
-    stmt_chat = select(Chat).where(Chat.chat_id == resolved_id)
+    stmt_chat = select(Chat).where(Chat.chat_id.in_(candidate_ids))
     res_chat = await db.execute(stmt_chat)
     chat = res_chat.scalar_one_or_none()
     if chat:
@@ -725,6 +735,6 @@ async def delete_course_photo(
 
     return {
         "success": True,
-        "courseId": resolved_id,
+        "courseId": lesson.lesson_id,
         "photo_url": None,
     }

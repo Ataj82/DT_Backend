@@ -133,6 +133,7 @@ async def require_chat_owner(
 # ============================================================
 
 from sqlalchemy import select, delete
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -162,13 +163,14 @@ def get_request_timezone(request: Optional[Request] = None) -> ZoneInfo:
     return TEHRAN_TZ
 
 STUDENT_NAMESPACE = UUID("20000000-0000-4000-8000-000000000000")
-OS_COURSE_UUID = UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
-LEGACY_OS_UUID = UUID("c0000000-0000-4000-8000-000000000001")
+OS_COURSE_UUID = UUID("c0000000-0000-4000-8000-000000000001")
+FRONTEND_OS_UUID = UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
+LEGACY_OS_UUID = FRONTEND_OS_UUID
 
 def is_os_course(course_uuid: Optional[UUID]) -> bool:
     if course_uuid is None:
         return True
-    return course_uuid in (OS_COURSE_UUID, LEGACY_OS_UUID)
+    return course_uuid in (OS_COURSE_UUID, FRONTEND_OS_UUID)
 
 def resolve_course_uuid(course_id: Optional[str]) -> Optional[UUID]:
     if not course_id:
@@ -178,7 +180,7 @@ def resolve_course_uuid(course_id: Optional[str]) -> Optional[UUID]:
         return OS_COURSE_UUID
     try:
         parsed = UUID(val_str)
-        if parsed == LEGACY_OS_UUID:
+        if parsed in (FRONTEND_OS_UUID, OS_COURSE_UUID):
             return OS_COURSE_UUID
         return parsed
     except Exception:
@@ -190,7 +192,7 @@ def resolve_target_uuid(chat_type: str, target_id_str: str) -> UUID:
         return OS_COURSE_UUID
     try:
         parsed = UUID(val_str)
-        if parsed == LEGACY_OS_UUID:
+        if parsed in (FRONTEND_OS_UUID, OS_COURSE_UUID):
             return OS_COURSE_UUID
         return parsed
     except Exception:
@@ -206,11 +208,19 @@ async def resolve_student_course_chat_uuid(
     course_uuid: Optional[UUID] = None,
 ) -> UUID:
     target_course_uuid = course_uuid or OS_COURSE_UUID
-    if target_course_uuid == LEGACY_OS_UUID:
-        target_course_uuid = OS_COURSE_UUID
+    if is_os_course(target_course_uuid):
+        stmt_check = select(Lesson.lesson_id).where(
+            Lesson.lesson_id.in_([OS_COURSE_UUID, FRONTEND_OS_UUID])
+        )
+        res_check = await db.execute(stmt_check)
+        actual_os_id = res_check.scalar_one_or_none()
+        if actual_os_id:
+            target_course_uuid = actual_os_id
+        else:
+            target_course_uuid = OS_COURSE_UUID
 
     # 1. Check if mapping exists in lesson_bot_chats
-    candidate_course_ids = [OS_COURSE_UUID, LEGACY_OS_UUID] if is_os_course(target_course_uuid) else [target_course_uuid]
+    candidate_course_ids = [OS_COURSE_UUID, FRONTEND_OS_UUID] if is_os_course(target_course_uuid) else [target_course_uuid]
     stmt = select(LessonBotChat).where(
         LessonBotChat.student_id == student_uuid,
         LessonBotChat.lesson_id.in_(candidate_course_ids)
@@ -219,6 +229,37 @@ async def resolve_student_course_chat_uuid(
     bot_chat = res.scalar_one_or_none()
     if bot_chat:
         return bot_chat.chat_id
+
+    # Verify lesson exists in database before creating any LessonBotChat
+    stmt_l = select(Lesson).where(Lesson.lesson_id == target_course_uuid)
+    res_l = await db.execute(stmt_l)
+    lesson_obj = res_l.scalar_one_or_none()
+    if not lesson_obj:
+        if is_os_course(target_course_uuid):
+            stmt_t = select(User.user_id).where(User.user_id == UUID("10000000-0000-4000-8000-000000000001"))
+            res_t = await db.execute(stmt_t)
+            teacher_id_val = res_t.scalar_one_or_none()
+            if not teacher_id_val:
+                stmt_t_any = select(User.user_id).where(User.user_type.in_(["TEACHER", "ADMIN"])).limit(1)
+                res_t_any = await db.execute(stmt_t_any)
+                teacher_id_val = res_t_any.scalar_one_or_none() or student_uuid
+
+            lesson_obj = Lesson(
+                lesson_id=target_course_uuid,
+                title="سیستم عامل",
+                subject="سیستم عامل",
+                description="مطالعه مفاهیم و الگوریتم‌های مدیریت منابع سخت‌افزاری و نرم‌افزاری (هسته، حافظه، پردازش، ورودی/خروجی، فایل‌سیستم و زمان‌بندی)",
+                teacher_id=teacher_id_val,
+                is_active=True,
+                is_public=False,
+            )
+            db.add(lesson_obj)
+            await db.flush()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Course {target_course_uuid} not found",
+            )
 
     # 2. Check if legacy messages exist directly under student_uuid
     # If the target course is the OS course, legacy messages belong to the OS course
@@ -238,12 +279,19 @@ async def resolve_student_course_chat_uuid(
                 await db.flush()
 
             new_lbc = LessonBotChat(
-                lesson_id=OS_COURSE_UUID,
+                lesson_id=target_course_uuid,
                 student_id=student_uuid,
                 chat_id=student_uuid,
             )
-            db.add(new_lbc)
-            await db.flush()
+            try:
+                db.add(new_lbc)
+                await db.flush()
+            except IntegrityError:
+                await db.rollback()
+                res = await db.execute(stmt)
+                bot_chat = res.scalar_one_or_none()
+                if bot_chat:
+                    return bot_chat.chat_id
             return student_uuid
 
     # 3. For any other course (e.g. Blockchain) or OS course without legacy messages:
@@ -252,10 +300,7 @@ async def resolve_student_course_chat_uuid(
     stmt_c = select(Chat).where(Chat.chat_id == deterministic_chat_id)
     res_c = await db.execute(stmt_c)
     if not res_c.scalar_one_or_none():
-        stmt_l = select(Lesson).where(Lesson.lesson_id == target_course_uuid)
-        res_l = await db.execute(stmt_l)
-        lesson_obj = res_l.scalar_one_or_none()
-        c_title = f"چت درس {lesson_obj.title}" if lesson_obj else "Student Course Chat"
+        c_title = f"چت درس {lesson_obj.title}" if lesson_obj and lesson_obj.title else "Student Course Chat"
         db.add(Chat(
             chat_id=deterministic_chat_id,
             chat_type="PRIVATE",
@@ -269,8 +314,15 @@ async def resolve_student_course_chat_uuid(
         student_id=student_uuid,
         chat_id=deterministic_chat_id,
     )
-    db.add(new_lbc)
-    await db.flush()
+    try:
+        db.add(new_lbc)
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        res = await db.execute(stmt)
+        bot_chat = res.scalar_one_or_none()
+        if bot_chat:
+            return bot_chat.chat_id
     return deterministic_chat_id
 
 async def _resolve_or_create_chat(
@@ -657,7 +709,7 @@ async def add_message_comment(
                 lesson = res_l.scalar_one_or_none()
             else:
                 # Default OS lesson
-                res_l = await db.execute(select(Lesson).where(Lesson.lesson_id == UUID("c0000000-0000-4000-8000-000000000001")))
+                res_l = await db.execute(select(Lesson).where(Lesson.lesson_id == OS_COURSE_UUID))
                 lesson = res_l.scalar_one_or_none()
         if lesson and lesson.teacher_id:
             teacher_id_val = str(lesson.teacher_id)

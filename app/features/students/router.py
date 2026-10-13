@@ -91,13 +91,24 @@ def _format_student(
         blocked=not (user.is_active if user.is_active is not None else True),
     )
 
+OS_COURSE_UUID = UUID("c0000000-0000-4000-8000-000000000001")
+FRONTEND_OS_UUID = UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
+
+def get_candidate_course_ids(course_id: UUID) -> List[UUID]:
+    if course_id in (OS_COURSE_UUID, FRONTEND_OS_UUID):
+        return [OS_COURSE_UUID, FRONTEND_OS_UUID]
+    return [course_id]
+
 def _resolve_course_id(course_id: str) -> UUID:
     if str(course_id).lower() in ("os", "operating-systems"):
-        return UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
+        return OS_COURSE_UUID
     try:
-        return UUID(course_id)
-    except ValueError:
-        return UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
+        val = UUID(str(course_id))
+        if val == FRONTEND_OS_UUID:
+            return OS_COURSE_UUID
+        return val
+    except (ValueError, AttributeError):
+        return OS_COURSE_UUID
 
 def _resolve_student_id(student_id: str) -> UUID:
     try:
@@ -112,9 +123,10 @@ def _resolve_student_id(student_id: str) -> UUID:
 @router.get("/courses/{course_id}/students", response_model=List[StudentResponse])
 async def get_students_by_course(course_id: str, db: AsyncSession = Depends(get_db)):
     resolved_course_id = _resolve_course_id(course_id)
+    candidate_ids = get_candidate_course_ids(resolved_course_id)
 
     # Fetch course to identify teacher
-    stmt_lesson = select(Lesson.teacher_id).where(Lesson.lesson_id == resolved_course_id)
+    stmt_lesson = select(Lesson.teacher_id).where(Lesson.lesson_id.in_(candidate_ids))
     res_lesson = await db.execute(stmt_lesson)
     teacher_id = res_lesson.scalar_one_or_none()
 
@@ -122,7 +134,7 @@ async def get_students_by_course(course_id: str, db: AsyncSession = Depends(get_
         select(User)
         .join(LessonMember, LessonMember.user_id == User.user_id)
         .where(
-            LessonMember.lesson_id == resolved_course_id,
+            LessonMember.lesson_id.in_(candidate_ids),
             LessonMember.role == "STUDENT",
             User.user_type == "STUDENT",
         )
@@ -197,7 +209,7 @@ async def get_student_by_id(student_id: str, db: AsyncSession = Depends(get_db))
 
     stmt_member = select(LessonMember.lesson_id).where(LessonMember.user_id == user.user_id).limit(1)
     res_member = await db.execute(stmt_member)
-    member_lesson_id = res_member.scalar_one_or_none() or UUID("c0000000-0000-4000-8000-000000000001")
+    member_lesson_id = res_member.scalar_one_or_none() or OS_COURSE_UUID
 
     stmt_last_msg = (
         select(Message)
@@ -224,7 +236,7 @@ async def get_student_by_id(student_id: str, db: AsyncSession = Depends(get_db))
 
 @router.patch("/courses/{course_id}/students/{student_id}/block")
 async def toggle_block_student(
-    course_id: UUID,
+    course_id: str,
     student_id: UUID,
     payload: BlockStudentRequest,
     db: AsyncSession = Depends(get_db),
@@ -246,12 +258,14 @@ async def toggle_block_student(
 
 @router.delete("/courses/{course_id}/students/{student_id}")
 async def remove_student_from_course(
-    course_id: UUID,
+    course_id: str,
     student_id: UUID,
     db: AsyncSession = Depends(get_db),
 ):
+    resolved_course_id = _resolve_course_id(course_id)
+    candidate_ids = get_candidate_course_ids(resolved_course_id)
     stmt = delete(LessonMember).where(
-        LessonMember.lesson_id == course_id,
+        LessonMember.lesson_id.in_(candidate_ids),
         LessonMember.user_id == student_id,
     )
     await db.execute(stmt)
