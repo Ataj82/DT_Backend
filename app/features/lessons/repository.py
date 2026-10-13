@@ -9,6 +9,19 @@ from app.features.lessons.models import (
     LessonBotChat, LessonQuiz
 )
 
+OS_COURSE_UUID = UUID("c0000000-0000-4000-8000-000000000001")
+FRONTEND_OS_UUID = UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5")
+
+def get_candidate_lesson_ids(lesson_id: UUID) -> List[UUID]:
+    if lesson_id in (OS_COURSE_UUID, FRONTEND_OS_UUID):
+        return [OS_COURSE_UUID, FRONTEND_OS_UUID]
+    return [lesson_id]
+
+def resolve_lesson_id(lesson_id: UUID) -> UUID:
+    if lesson_id in (OS_COURSE_UUID, FRONTEND_OS_UUID):
+        return OS_COURSE_UUID
+    return lesson_id
+
 
 class LessonRepository:
     def __init__(self, db: AsyncSession):
@@ -36,7 +49,8 @@ class LessonRepository:
         return list(result.scalars().all())
 
     async def get_lesson(self, lesson_id: UUID) -> Optional[Lesson]:
-        stmt = select(Lesson).where(Lesson.lesson_id == lesson_id)
+        candidates = get_candidate_lesson_ids(lesson_id)
+        stmt = select(Lesson).where(Lesson.lesson_id.in_(candidates))
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -55,8 +69,9 @@ class LessonRepository:
         await self.db.commit()
 
     async def get_member(self, lesson_id: UUID, user_id: UUID) -> Optional[LessonMember]:
+        candidates = get_candidate_lesson_ids(lesson_id)
         stmt = select(LessonMember).where(
-            LessonMember.lesson_id == lesson_id,
+            LessonMember.lesson_id.in_(candidates),
             LessonMember.user_id == user_id,
             LessonMember.left_at.is_(None)
         )
@@ -65,8 +80,9 @@ class LessonRepository:
 
     async def get_members(self, lesson_id: UUID) -> List[LessonMember]:
         from sqlalchemy.orm import selectinload
+        candidates = get_candidate_lesson_ids(lesson_id)
         stmt = select(LessonMember).options(selectinload(LessonMember.user)).where(
-            LessonMember.lesson_id == lesson_id,
+            LessonMember.lesson_id.in_(candidates),
             LessonMember.left_at.is_(None)
         )
         result = await self.db.execute(stmt)
@@ -74,6 +90,8 @@ class LessonRepository:
 
     # Material
     async def add_material(self, **kwargs) -> LessonMaterial:
+        if "lesson_id" in kwargs and kwargs["lesson_id"]:
+            kwargs["lesson_id"] = resolve_lesson_id(kwargs["lesson_id"])
         material = LessonMaterial(**kwargs)
         self.db.add(material)
         await self.db.commit()
@@ -82,10 +100,11 @@ class LessonRepository:
 
     async def get_materials(self, lesson_id: UUID) -> List[LessonMaterial]:
         from sqlalchemy.orm import selectinload
+        candidates = get_candidate_lesson_ids(lesson_id)
         stmt = (
             select(LessonMaterial)
             .options(selectinload(LessonMaterial.attachment))
-            .where(LessonMaterial.lesson_id == lesson_id)
+            .where(LessonMaterial.lesson_id.in_(candidates))
             .order_by(LessonMaterial.created_at.desc())
         )
         result = await self.db.execute(stmt)
@@ -93,11 +112,12 @@ class LessonRepository:
 
     async def get_material(self, lesson_id: UUID, material_id: UUID) -> Optional[LessonMaterial]:
         from sqlalchemy.orm import selectinload
+        candidates = get_candidate_lesson_ids(lesson_id)
         stmt = (
             select(LessonMaterial)
             .options(selectinload(LessonMaterial.attachment))
             .where(
-                LessonMaterial.lesson_id == lesson_id,
+                LessonMaterial.lesson_id.in_(candidates),
                 LessonMaterial.material_id == material_id
             )
         )
@@ -115,6 +135,8 @@ class LessonRepository:
 
     # Bot Chat
     async def create_bot_chat(self, **kwargs) -> LessonBotChat:
+        if "lesson_id" in kwargs and kwargs["lesson_id"]:
+            kwargs["lesson_id"] = resolve_lesson_id(kwargs["lesson_id"])
         bot_chat = LessonBotChat(**kwargs)
         self.db.add(bot_chat)
         await self.db.commit()
@@ -122,8 +144,9 @@ class LessonRepository:
         return bot_chat
 
     async def get_bot_chat(self, lesson_id: UUID, student_id: UUID) -> Optional[LessonBotChat]:
+        candidates = get_candidate_lesson_ids(lesson_id)
         stmt = select(LessonBotChat).where(
-            LessonBotChat.lesson_id == lesson_id,
+            LessonBotChat.lesson_id.in_(candidates),
             LessonBotChat.student_id == student_id
         )
         result = await self.db.execute(stmt)
@@ -131,13 +154,16 @@ class LessonRepository:
 
     # Quiz
     async def create_quiz(self, **kwargs) -> LessonQuiz:
+        if "lesson_id" in kwargs and kwargs["lesson_id"]:
+            kwargs["lesson_id"] = resolve_lesson_id(kwargs["lesson_id"])
         quiz = LessonQuiz(**kwargs)
         self.db.add(quiz)
         await self.db.commit()
         await self.db.refresh(quiz)
         return quiz
     async def get_quizzes(self, lesson_id: UUID) -> List[LessonQuiz]:
-        stmt = select(LessonQuiz).where(LessonQuiz.lesson_id == lesson_id)
+        candidates = get_candidate_lesson_ids(lesson_id)
+        stmt = select(LessonQuiz).where(LessonQuiz.lesson_id.in_(candidates))
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 

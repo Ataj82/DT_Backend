@@ -9,6 +9,7 @@ from app.features.users.models import User
 from .schemas import *
 from .services import LessonService
 from .dependencies import require_lesson_teacher, require_lesson_member
+from .repository import resolve_lesson_id
 
 router = APIRouter()
 
@@ -156,7 +157,7 @@ async def create_quiz(
     service: LessonService = Depends(get_lesson_service),
     current_user: User = Depends(require_lesson_teacher),
 ):
-    return await service.create_quiz(lesson_id, current_user.user_id, payload)
+    return await service.create_quiz(resolve_lesson_id(lesson_id), current_user.user_id, payload)
 
 
 # ====================== Bot Chat ======================
@@ -243,7 +244,7 @@ async def get_quizzes(
     service: LessonService = Depends(get_lesson_service),
     current_user: User = Depends(require_lesson_member),
 ):
-    return await service.get_quizzes(lesson_id)
+    return await service.get_quizzes(resolve_lesson_id(lesson_id))
 
 @router.post("/{lesson_id}/quizzes/{quiz_id}/questions", response_model=QuizQuestionResponse)
 async def add_quiz_question(

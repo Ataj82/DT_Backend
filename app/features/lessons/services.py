@@ -9,7 +9,7 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.lessons.repository import LessonRepository
+from app.features.lessons.repository import LessonRepository, resolve_lesson_id
 from app.features.lessons.schemas import *
 from app.features.lessons.models import LessonMaterial
 from app.features.lessons.rag_service import rag_service
@@ -239,6 +239,7 @@ class LessonService:
     async def create_quiz(
         self, lesson_id: UUID, teacher_id: UUID, payload: LessonQuizCreate
     ) -> LessonQuizResponse:
+        resolved_lesson_id = resolve_lesson_id(lesson_id)
         data = payload.model_dump(exclude_unset=True)
         if "student_ids" in data and data["student_ids"]:
             data["student_ids"] = [str(sid) for sid in data["student_ids"]]
@@ -277,7 +278,7 @@ class LessonService:
         materials = data.pop("materials", None)
 
         quiz = await self.repo.create_quiz(
-            lesson_id=lesson_id,
+            lesson_id=resolved_lesson_id,
             teacher_id=teacher_id,
             **data
         )
@@ -307,7 +308,7 @@ class LessonService:
 
             from app.features.exam_pipeline.knowledge.models import KnowledgeBase
 
-            kb_id = f"kb_{lesson_id}"
+            kb_id = f"kb_{resolved_lesson_id}"
             kb = fw.services.knowledge_service.get_knowledge_base(kb_id)
             if not kb:
                 kb = KnowledgeBase(
@@ -323,8 +324,8 @@ class LessonService:
                 knowledge_base_id=kb_id,
                 goals_data=goals_list,
                 title=quiz.title,
-                course_id=str(lesson_id),
-                lesson_id=str(lesson_id),
+                course_id=str(resolved_lesson_id),
+                lesson_id=str(resolved_lesson_id),
                 total_duration_minutes=dur_mins,
             )
             fw.services.goal_service.save(goal_model)
