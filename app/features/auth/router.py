@@ -330,6 +330,8 @@ async def get_login_directory(db: AsyncSession = Depends(get_db)):
             t_user = res_t.scalar_one_or_none()
             if t_user:
                 t_name = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
+                if not t_name or t_name in ("استاد دیجیتال", "دیجیتال", "استاد", "teacher", "Teacher") or "دیجیتال" in t_name:
+                    t_name = "دکتر محمد اله بخش"
                 teacher_info = {
                     "id": str(t_user.user_id),
                     "name": t_name,

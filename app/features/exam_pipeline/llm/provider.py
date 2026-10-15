@@ -35,6 +35,7 @@ import logging
 import socket
 import time
 from dataclasses import dataclass
+import http.client
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -244,98 +245,153 @@ class LLMProvider:
         )
 
         start_time = time.perf_counter()
-        try:
-            with urlopen(
-                request,
-                timeout=configuration.timeout_seconds,
-            ) as response:
-                body = json.loads(
-                    response.read().decode("utf-8")
+        body = None
+        max_attempts = 2
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with urlopen(
+                    request,
+                    timeout=configuration.timeout_seconds,
+                ) as response:
+                    body = json.loads(
+                        response.read().decode("utf-8")
+                    )
+                break
+            except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError) as exc:
+                elapsed_sec = time.perf_counter() - start_time
+                if attempt < max_attempts:
+                    logger.warning(
+                        "LLM connection disconnected (%s) on attempt %d/%d; retrying in 0.5s...",
+                        type(exc).__name__,
+                        attempt,
+                        max_attempts,
+                    )
+                    time.sleep(0.5)
+                    continue
+                logger.error(
+                    "\n"
+                    "====================================================================\n"
+                    "!!! [LLM REQUEST FAILED - REMOTE DISCONNECTED]\n"
+                    "  !- Destination IP : %s (Host: %s)\n"
+                    "  !- URL            : %s\n"
+                    "  !- Duration       : %.2fs\n"
+                    "  !- Error Detail   : %s\n"
+                    "====================================================================",
+                    dest_ip,
+                    dest_host_port,
+                    url,
+                    elapsed_sec,
+                    str(exc),
                 )
+                raise LLMProviderError(f"LLM connection dropped: {exc}") from exc
 
-        except HTTPError as exc:
-            elapsed_sec = time.perf_counter() - start_time
-            detail = exc.read().decode(
-                "utf-8",
-                errors="replace",
-            )
-            logger.error(
-                "\n"
-                "====================================================================\n"
-                "!!! [LLM REQUEST FAILED - HTTP %s]\n"
-                "  !- Destination IP : %s (Host: %s)\n"
-                "  !- URL            : %s\n"
-                "  !- Duration       : %.2fs\n"
-                "  !- Error Detail   : %s\n"
-                "====================================================================",
-                exc.code,
-                dest_ip,
-                dest_host_port,
-                url,
-                elapsed_sec,
-                detail[:500],
-            )
-            raise LLMProviderError(
-                f"LLM request failed with HTTP {exc.code}: "
-                f"{detail}"
-            ) from exc
+            except HTTPError as exc:
+                elapsed_sec = time.perf_counter() - start_time
+                detail = exc.read().decode(
+                    "utf-8",
+                    errors="replace",
+                )
+                logger.error(
+                    "\n"
+                    "====================================================================\n"
+                    "!!! [LLM REQUEST FAILED - HTTP %s]\n"
+                    "  !- Destination IP : %s (Host: %s)\n"
+                    "  !- URL            : %s\n"
+                    "  !- Duration       : %.2fs\n"
+                    "  !- Error Detail   : %s\n"
+                    "====================================================================",
+                    exc.code,
+                    dest_ip,
+                    dest_host_port,
+                    url,
+                    elapsed_sec,
+                    detail[:500],
+                )
+                raise LLMProviderError(
+                    f"LLM request failed with HTTP {exc.code}: "
+                    f"{detail}"
+                ) from exc
 
-        except URLError as exc:
-            elapsed_sec = time.perf_counter() - start_time
-            logger.error(
-                "\n"
-                "====================================================================\n"
-                "!!! [LLM REQUEST FAILED - NETWORK ERROR]\n"
-                "  !- Destination IP : %s (Host: %s)\n"
-                "  !- URL            : %s\n"
-                "  !- Duration       : %.2fs\n"
-                "  !- Reason         : %s\n"
-                "====================================================================",
-                dest_ip,
-                dest_host_port,
-                url,
-                elapsed_sec,
-                exc.reason,
-            )
-            raise LLMProviderError(
-                f"LLM request failed: {exc.reason}"
-            ) from exc
+            except URLError as exc:
+                elapsed_sec = time.perf_counter() - start_time
+                if attempt < max_attempts and isinstance(exc.reason, (socket.timeout, TimeoutError, ConnectionResetError)):
+                    time.sleep(0.5)
+                    continue
+                logger.error(
+                    "\n"
+                    "====================================================================\n"
+                    "!!! [LLM REQUEST FAILED - NETWORK ERROR]\n"
+                    "  !- Destination IP : %s (Host: %s)\n"
+                    "  !- URL            : %s\n"
+                    "  !- Duration       : %.2fs\n"
+                    "  !- Reason         : %s\n"
+                    "====================================================================",
+                    dest_ip,
+                    dest_host_port,
+                    url,
+                    elapsed_sec,
+                    exc.reason,
+                )
+                raise LLMProviderError(
+                    f"LLM request failed: {exc.reason}"
+                ) from exc
 
-        except TimeoutError as exc:
-            elapsed_sec = time.perf_counter() - start_time
-            logger.error(
-                "\n"
-                "====================================================================\n"
-                "!!! [LLM REQUEST FAILED - TIMEOUT]\n"
-                "  !- Destination IP : %s (Host: %s)\n"
-                "  !- URL            : %s\n"
-                "  !- Duration       : %.2fs (Limit: %ss)\n"
-                "====================================================================",
-                dest_ip,
-                dest_host_port,
-                url,
-                elapsed_sec,
-                configuration.timeout_seconds,
-            )
-            raise LLMProviderError(
-                "LLM request timed out."
-            ) from exc
+            except TimeoutError as exc:
+                elapsed_sec = time.perf_counter() - start_time
+                logger.error(
+                    "\n"
+                    "====================================================================\n"
+                    "!!! [LLM REQUEST FAILED - TIMEOUT]\n"
+                    "  !- Destination IP : %s (Host: %s)\n"
+                    "  !- URL            : %s\n"
+                    "  !- Duration       : %.2fs (Limit: %ss)\n"
+                    "====================================================================",
+                    dest_ip,
+                    dest_host_port,
+                    url,
+                    elapsed_sec,
+                    configuration.timeout_seconds,
+                )
+                raise LLMProviderError(
+                    "LLM request timed out."
+                ) from exc
 
-        except json.JSONDecodeError as exc:
-            elapsed_sec = time.perf_counter() - start_time
-            logger.error(
-                "\n"
-                "====================================================================\n"
-                "!!! [LLM REQUEST FAILED - INVALID JSON]\n"
-                "  !- Destination IP : %s\n"
-                "  !- Duration       : %.2fs\n"
-                "====================================================================",
-                dest_ip,
-                elapsed_sec,
-            )
-            raise LLMProviderError(
-                "LLM returned invalid JSON."
-            ) from exc
+            except json.JSONDecodeError as exc:
+                elapsed_sec = time.perf_counter() - start_time
+                logger.error(
+                    "\n"
+                    "====================================================================\n"
+                    "!!! [LLM REQUEST FAILED - INVALID JSON]\n"
+                    "  !- Destination IP : %s\n"
+                    "  !- Duration       : %.2fs\n"
+                    "====================================================================",
+                    dest_ip,
+                    elapsed_sec,
+                )
+                raise LLMProviderError(
+                    "LLM returned invalid JSON."
+                ) from exc
+
+            except Exception as exc:
+                elapsed_sec = time.perf_counter() - start_time
+                logger.error(
+                    "\n"
+                    "====================================================================\n"
+                    "!!! [LLM REQUEST FAILED - UNEXPECTED ERROR: %s]\n"
+                    "  !- Destination IP : %s (Host: %s)\n"
+                    "  !- URL            : %s\n"
+                    "  !- Duration       : %.2fs\n"
+                    "  !- Error Detail   : %s\n"
+                    "====================================================================",
+                    type(exc).__name__,
+                    dest_ip,
+                    dest_host_port,
+                    url,
+                    elapsed_sec,
+                    str(exc),
+                )
+                raise LLMProviderError(f"LLM request failed unexpectedly: {exc}") from exc
 
         elapsed_sec = time.perf_counter() - start_time
 

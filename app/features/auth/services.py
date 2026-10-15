@@ -272,8 +272,8 @@ class AuthService:
                 last_name = "رضایی"
                 role_raw = "STUDENT"
             else:
-                first_name = "استاد" if role_raw == "TEACHER" else ("دانشجو" if role_raw == "STUDENT" else "مدیر")
-                last_name = "دیجیتال" if role_raw == "TEACHER" else ("نمونه" if role_raw == "STUDENT" else "سامانه")
+                first_name = "دکتر محمد" if role_raw == "TEACHER" else ("دانشجو" if role_raw == "STUDENT" else "مدیر")
+                last_name = "اله بخش" if role_raw == "TEACHER" else ("نمونه" if role_raw == "STUDENT" else "سامانه")
 
             user = User(
                 username=username,

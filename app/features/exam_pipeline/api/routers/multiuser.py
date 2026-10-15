@@ -744,8 +744,16 @@ async def launch_my_assignment(
         # If it already has an active turn, reuse it so student can answer without error.
         turn = runtime.current_turn
         if turn is None:
-            turn = runtime.next_turn()
-            service.interview_service.save(runtime.session)
+            try:
+                turn = runtime.next_turn()
+                service.interview_service.save(runtime.session)
+            except Exception as turn_err:
+                import logging
+                logging.getLogger("multiuser").error("Failed to generate initial turn: %s", turn_err, exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="سامانه هوش مصنوعی در این لحظه با اختلال مواجه شد. لطفاً چند لحظه بعد دکمه تلاش مجدد را بزنید.",
+                ) from turn_err
 
         question = getattr(turn, "question", None)
         if question is None:

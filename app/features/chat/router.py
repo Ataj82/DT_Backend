@@ -386,6 +386,25 @@ async def _resolve_or_create_chat(
     return course_uuid
 
 
+PLACEHOLDER_TEACHER_NAMES = {
+    "دکتر محمدی",
+    "استاد",
+    "teacher",
+    "Teacher",
+    "TEACHER",
+    "استاد دکتر محمدی",
+    "استاد دیجیتال",
+    "دیجیتال",
+}
+
+
+def sanitize_teacher_name(name: Optional[str]) -> str:
+    cleaned = (name or "").strip()
+    if not cleaned or cleaned in PLACEHOLDER_TEACHER_NAMES or "دیجیتال" in cleaned:
+        return "دکتر محمد اله بخش"
+    return cleaned
+
+
 @router.get("/{chat_type}/{target_id}/messages", response_model=List[ChatMessageItem])
 async def get_persisted_chat_history(
     chat_type: str,
@@ -424,6 +443,7 @@ async def get_persisted_chat_history(
                     c_dict.setdefault("read_by", [])
                     c_dict.setdefault("read_at", None)
                     c_dict.setdefault("message_id", str(msg.message_id))
+                    c_dict["teacher_name"] = sanitize_teacher_name(c_dict.get("teacher_name"))
 
                     # Localize comment time and date
                     c_created_str = c_dict.get("created_at")
@@ -667,12 +687,12 @@ async def add_message_comment(
             detail="Message not found",
         )
 
-    # Resolve real teacher name - absolutely no mock data
+    # Resolve real teacher name - absolutely no mock data or placeholder
     raw_teacher_name = (payload.teacher_name or "").strip()
     resolved_teacher_name = ""
 
     # 1. If payload contains a valid non-placeholder teacher name
-    if raw_teacher_name and raw_teacher_name not in ("دکتر محمدی", "استاد", "Teacher", "استاد دکتر محمدی"):
+    if raw_teacher_name and raw_teacher_name not in PLACEHOLDER_TEACHER_NAMES and "دیجیتال" not in raw_teacher_name:
         resolved_teacher_name = raw_teacher_name
 
     # 2. Check authenticated user token in request
@@ -690,7 +710,7 @@ async def add_message_comment(
                     u = res_u.scalar_one_or_none()
                     if u:
                         real = f"{u.first_name or ''} {u.last_name or ''}".strip() or u.username
-                        if real:
+                        if real and real not in PLACEHOLDER_TEACHER_NAMES and "دیجیتال" not in real:
                             resolved_teacher_name = real
             except Exception:
                 pass
@@ -716,10 +736,11 @@ async def add_message_comment(
             res_t = await db.execute(select(User).where(User.user_id == lesson.teacher_id))
             t_user = res_t.scalar_one_or_none()
             if t_user:
-                resolved_teacher_name = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
+                real = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
+                if real and real not in PLACEHOLDER_TEACHER_NAMES and "دیجیتال" not in real:
+                    resolved_teacher_name = real
 
-    if not resolved_teacher_name:
-        resolved_teacher_name = raw_teacher_name or "دکتر محمد اله بخش"
+    resolved_teacher_name = sanitize_teacher_name(resolved_teacher_name or raw_teacher_name)
 
     current_meta = dict(msg.metadata_json) if msg.metadata_json and isinstance(msg.metadata_json, dict) else {}
     comments = list(current_meta.get("comments", []))
@@ -954,7 +975,7 @@ async def get_student_unread_comments_summary(
                     "comment_id": cid,
                     "id": cid,
                     "message_id": str(msg.message_id),
-                    "teacher_name": c.get("teacher_name", "استاد"),
+                    "teacher_name": sanitize_teacher_name(c.get("teacher_name")),
                     "comment": c.get("comment", ""),
                     "created_at": c_dt.isoformat(),
                     "time": c_local_dt.strftime("%H:%M"),

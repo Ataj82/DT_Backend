@@ -189,6 +189,8 @@ async def get_all_courses(
         res_t = await db.execute(stmt_t)
         for t_user in res_t.scalars().all():
             full = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
+            if not full or full in ("استاد دیجیتال", "دیجیتال", "استاد", "teacher", "Teacher") or "دیجیتال" in full:
+                full = "دکتر محمد اله بخش"
             teachers_map[t_user.user_id] = full
 
     courses = []
@@ -343,6 +345,8 @@ async def get_course_by_id(
         t_user = res_t.scalar_one_or_none()
         if t_user:
             teacher_name = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
+            if not teacher_name or teacher_name in ("استاد دیجیتال", "دیجیتال", "استاد", "teacher", "Teacher") or "دیجیتال" in teacher_name:
+                teacher_name = "دکتر محمد اله بخش"
 
     is_enrolled = False
     has_pending = False
@@ -507,6 +511,8 @@ async def get_course_details(course_id: str, db: AsyncSession = Depends(get_db))
         t_user = res_t.scalar_one_or_none()
         if t_user:
             teacher_name = f"{t_user.first_name or ''} {t_user.last_name or ''}".strip() or t_user.username
+            if not teacher_name or teacher_name in ("استاد دیجیتال", "دیجیتال", "استاد", "teacher", "Teacher") or "دیجیتال" in teacher_name:
+                teacher_name = "دکتر محمد اله بخش"
 
     meta = get_course_meta(lesson)
     return CourseDetailResponse(
