@@ -19,7 +19,7 @@ def get_candidate_lesson_ids(lesson_id: UUID) -> List[UUID]:
 
 def resolve_lesson_id(lesson_id: UUID) -> UUID:
     if lesson_id in (OS_COURSE_UUID, FRONTEND_OS_UUID):
-        return OS_COURSE_UUID
+        return FRONTEND_OS_UUID
     return lesson_id
 
 
@@ -156,7 +156,9 @@ class LessonRepository:
     async def create_quiz(self, **kwargs) -> LessonQuiz:
         if "lesson_id" in kwargs and kwargs["lesson_id"]:
             kwargs["lesson_id"] = resolve_lesson_id(kwargs["lesson_id"])
-        quiz = LessonQuiz(**kwargs)
+        valid_cols = set(LessonQuiz.__table__.columns.keys())
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_cols}
+        quiz = LessonQuiz(**filtered_kwargs)
         self.db.add(quiz)
         await self.db.commit()
         await self.db.refresh(quiz)

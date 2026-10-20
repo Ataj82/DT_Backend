@@ -145,6 +145,7 @@ class LessonQuiz(Base):
     student_ids = Column(JSONB, nullable=True, server_default="[]")
     gap_minutes = Column(Integer, default=5, nullable=True)
     exam_date = Column(String(50), nullable=True)
+    language = Column(String(10), default="fa", nullable=True)
 
     is_active = Column(Boolean, default=True)
     start_at = Column(DateTime(timezone=True), nullable=True)

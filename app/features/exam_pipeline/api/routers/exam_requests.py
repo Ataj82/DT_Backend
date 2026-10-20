@@ -418,7 +418,7 @@ async def generate_goals_from_file(
 
 
 @router.post("/create", response_model=ExamResponse, status_code=status.HTTP_201_CREATED)
-def create_exam_request(
+async def create_exam_request(
     request: ExamCreateRequest,
     current_user: User = Depends(require_professor),
     framework=Depends(get_framework),
@@ -539,6 +539,54 @@ def create_exam_request(
         assignment_id=assignment.id,
     )
 
+    # 7. Persist to lesson_quizzes table in PostgreSQL
+    try:
+        from app.database import async_session
+        from app.features.lessons.models import LessonQuiz
+        from app.features.lessons.repository import resolve_lesson_id, FRONTEND_OS_UUID
+        import uuid as _uuid
+
+        raw_lid = request.lesson_id or request.course_id
+        resolved_lid = resolve_lesson_id(_uuid.UUID(str(raw_lid))) if raw_lid else FRONTEND_OS_UUID
+        prof_uuid = _uuid.UUID(str(current_user.id))
+
+        async with async_session() as session:
+            db_quiz = await session.get(LessonQuiz, _uuid.UUID(str(assignment.id)))
+            if not db_quiz:
+                db_quiz = LessonQuiz(
+                    quiz_id=_uuid.UUID(str(assignment.id)),
+                    lesson_id=resolved_lid,
+                    teacher_id=prof_uuid,
+                    title=assignment.title,
+                    description=assignment.description,
+                    mode="quiz",
+                    duration_minutes=request.duration_minutes,
+                    goals=goals_data,
+                    student_ids=cleaned_student_ids,
+                    gap_minutes=request.gap_minutes or 5,
+                    exam_date=request.exam_date,
+                    start_at=starts_dt,
+                    end_at=ends_dt,
+                    language=req_lang,
+                    is_active=request.is_active if request.is_active is not None else True,
+                )
+                session.add(db_quiz)
+            else:
+                db_quiz.title = assignment.title
+                db_quiz.description = assignment.description
+                db_quiz.duration_minutes = request.duration_minutes
+                db_quiz.goals = goals_data
+                db_quiz.student_ids = cleaned_student_ids
+                db_quiz.gap_minutes = request.gap_minutes or 5
+                db_quiz.exam_date = request.exam_date
+                db_quiz.start_at = starts_dt
+                db_quiz.end_at = ends_dt
+                db_quiz.language = req_lang
+                db_quiz.is_active = request.is_active if request.is_active is not None else True
+            await session.commit()
+    except Exception as db_err:
+        logging.getLogger(__name__).warning("Failed to persist exam to lesson_quizzes table: %s", db_err)
+
     return ExamResponse(
         quiz_id=assignment.id,
         id=assignment.id,
@@ -567,7 +615,7 @@ def create_exam_request(
 
 
 @router.get("", response_model=list[ExamResponse])
-def list_exams(
+async def list_exams(
     current_user: User = Depends(require_professor),
     framework=Depends(get_framework),
     multiuser_service=Depends(get_multiuser_service),
@@ -575,6 +623,7 @@ def list_exams(
     """
     List all exams created by the professor with their goals and student rosters.
     """
+    await _sync_db_quizzes_to_pipeline(multiuser_service, framework)
     assignments = multiuser_service.professor_assignments(professor=current_user)
     result = []
     for a in assignments:
@@ -624,8 +673,10 @@ async def _sync_db_quizzes_to_pipeline(multiuser_service, framework, student_id_
         import uuid
 
         async with async_session() as session:
-            lesson_ids = []
-            if student_id_str:
+            if not student_id_str:
+                stmt_q = select(LessonQuiz)
+            else:
+                lesson_ids = []
                 try:
                     u_uuid = uuid.UUID(student_id_str)
                     stmt_m = select(LessonMember.lesson_id).where(LessonMember.user_id == u_uuid)
@@ -634,11 +685,15 @@ async def _sync_db_quizzes_to_pipeline(multiuser_service, framework, student_id_
                 except Exception:
                     pass
 
-            default_lid = uuid.UUID("c0000000-0000-4000-8000-000000000001")
-            if default_lid not in lesson_ids:
-                lesson_ids.append(default_lid)
+                for default_lid in [
+                    uuid.UUID("bbd22574-beac-4bdc-8cc4-afdc663a10d5"),
+                    uuid.UUID("c0000000-0000-4000-8000-000000000001"),
+                ]:
+                    if default_lid not in lesson_ids:
+                        lesson_ids.append(default_lid)
 
-            stmt_q = select(LessonQuiz).where(LessonQuiz.lesson_id.in_(lesson_ids))
+                stmt_q = select(LessonQuiz).where(LessonQuiz.lesson_id.in_(lesson_ids))
+
             res_q = await session.execute(stmt_q)
             db_quizzes = res_q.scalars().all()
 

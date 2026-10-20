@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.lessons.repository import LessonRepository, resolve_lesson_id
 from app.features.lessons.schemas import *
-from app.features.lessons.models import LessonMaterial
+from app.features.lessons.models import LessonMaterial, LessonQuiz
 from app.features.lessons.rag_service import rag_service
 from app.features.chat.repository import ChatRepository
 from app.features.users.repository import UserRepository
@@ -276,11 +276,15 @@ class LessonService:
             data["end_at"] = _parse_time_val(data["end_at"])
 
         materials = data.pop("materials", None)
+        quiz_lang = data.get("language", "fa")
+
+        quiz_columns = {c.name for c in LessonQuiz.__table__.columns}
+        quiz_data = {k: v for k, v in data.items() if k in quiz_columns}
 
         quiz = await self.repo.create_quiz(
             lesson_id=resolved_lesson_id,
             teacher_id=teacher_id,
-            **data
+            **quiz_data
         )
 
         # Auto-sync with Adaptive Exam Pipeline
@@ -342,6 +346,7 @@ class LessonService:
                 goal_time_allocations_seconds=allocations,
                 passing_threshold=0.70,
                 allow_followup_questions=True,
+                language=quiz_lang,
                 starts_at=quiz.start_at,
                 ends_at=quiz.end_at,
                 assignment_id=str(quiz.quiz_id),
@@ -349,6 +354,9 @@ class LessonService:
 
             if assignment.configuration_snapshot is None:
                 assignment.configuration_snapshot = {}
+            assignment.configuration_snapshot["language"] = quiz_lang
+            if quiz.exam_date:
+                assignment.configuration_snapshot["exam_date"] = quiz.exam_date
             assignment.configuration_snapshot["gap_minutes"] = gap_m
             if materials:
                 assignment.configuration_snapshot["materials"] = materials
