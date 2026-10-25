@@ -21,11 +21,12 @@ if config.config_file_name is not None:
 # add your model's MetaData object here
 # for 'autogenerate' support
 from app.core.database import Base
-from app.features.users.models import User
-from app.features.chat.models import Chat, ChatMember, Message
-from app.features.bot.models import BotConfig
-from app.features.auth.models import UserSession
-from app.features.lessons.models import QuizAttempt, QuizQuestion, LessonMaterial, Lesson, LessonMember, LessonBotChat
+import app.features.users.models
+import app.features.chat.models
+import app.features.bot.models
+import app.features.auth.models
+import app.features.lessons.models
+import app.features.biometrics.db_models
 
 target_metadata = Base.metadata
 # target_metadata = None

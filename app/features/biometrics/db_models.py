@@ -78,3 +78,40 @@ class UserBiometricProfile(Base):
             "has_neutral_baseline": self.neutral_baseline_mean is not None,
             "can_edit": bool(self.can_edit),
         }
+
+
+class ExamProctoringIncident(Base):
+    __tablename__ = "exam_proctoring_incidents"
+
+    id = Column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=sa.text("gen_random_uuid()"),
+    )
+    session_id = Column(String, nullable=False, index=True)
+    assignment_id = Column(String, nullable=True, index=True)
+    student_id = Column(String, nullable=False, index=True)
+    violation_type = Column(String, nullable=False)  # multiple_faces, face_mismatch, no_face, gaze_out_of_bounds
+    strike_number = Column(Integer, nullable=False)  # 1, 2, 3
+    image_url = Column(String, nullable=True)
+    details = Column(JSONB, nullable=True)
+    notes = Column(String, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": str(self.id),
+            "session_id": self.session_id,
+            "assignment_id": self.assignment_id,
+            "student_id": self.student_id,
+            "violation_type": self.violation_type,
+            "strike_number": self.strike_number,
+            "image_url": self.image_url,
+            "details": self.details or {},
+            "notes": self.notes,
+            "timestamp": self.created_at.isoformat() if self.created_at else None,
+        }

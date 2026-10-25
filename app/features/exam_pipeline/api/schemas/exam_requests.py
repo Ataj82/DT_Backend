@@ -293,3 +293,4 @@ class ExamSessionDetailResponse(APIModel):
     turns: list[TurnDetail] = Field(default_factory=list)
     goals: list[GoalMetricDetail] = Field(default_factory=list)
     recommendations: list[RecommendationDetail] = Field(default_factory=list)
+    incidents: list[dict] = Field(default_factory=list)

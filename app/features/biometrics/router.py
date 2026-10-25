@@ -54,6 +54,8 @@ from .schemas import (
     BiometricEditPermissionRequest,
     ExamDistractionLogRequest,
     ExamDistractionLogResponse,
+    ExamIncidentResponse,
+    ExamIncidentsListResponse,
 )
 
 # Native biometrics sub-engines
@@ -694,3 +696,300 @@ def get_exam_distractions(session_id: str):
         "total_distractions": len(EXAM_DISTRACTIONS.get(sid, [])),
         "events": EXAM_DISTRACTIONS.get(sid, [])
     }
+
+
+# ============================================================================
+# 6. EXAM PROCTORING INCIDENTS & EVIDENCE STORAGE (3-STRIKE RULE)
+# ============================================================================
+
+# In-memory session incident logs: session_id -> list of incident dicts
+EXAM_INCIDENTS: Dict[str, List[Dict[str, Any]]] = {}
+
+def _init_sqlite_incidents():
+    try:
+        from .telemetry import DB_FILE
+        import sqlite3
+        conn = sqlite3.connect(DB_FILE, timeout=30.0)
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS exam_incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                assignment_id TEXT,
+                student_id TEXT,
+                violation_type TEXT,
+                strike_number INTEGER,
+                image_url TEXT,
+                details_json TEXT,
+                notes TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[biometrics] SQLite incidents init warning: {e}")
+
+_init_sqlite_incidents()
+
+
+async def get_session_incidents_list(session_id: str) -> list[dict]:
+    """Retrieves all recorded proctoring incidents for an exam session."""
+    sid = str(session_id).strip()
+    results = []
+
+    # 1. Try PostgreSQL
+    try:
+        from .database import _get_async_session
+        async_session_factory = _get_async_session()
+        if async_session_factory:
+            async with async_session_factory() as session:
+                from .db_models import ExamProctoringIncident
+                from sqlalchemy import select
+                stmt = select(ExamProctoringIncident).where(
+                    ExamProctoringIncident.session_id == sid
+                ).order_by(ExamProctoringIncident.strike_number.asc())
+                res = await session.execute(stmt)
+                rows = res.scalars().all()
+                if rows:
+                    return [r.to_dict() for r in rows]
+    except Exception as e:
+        print(f"[biometrics] PG incidents fetch fallback: {e}")
+
+    # 2. Try SQLite
+    try:
+        from .telemetry import DB_FILE
+        import sqlite3
+        conn = sqlite3.connect(DB_FILE, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM exam_incidents WHERE session_id = ? ORDER BY strike_number ASC, id ASC",
+            (sid,)
+        )
+        rows = c.fetchall()
+        for r in rows:
+            d = dict(r)
+            details = {}
+            if d.get("details_json"):
+                try:
+                    details = json.loads(d["details_json"])
+                except Exception:
+                    details = {}
+            results.append({
+                "id": str(d.get("id")),
+                "session_id": d.get("session_id"),
+                "assignment_id": d.get("assignment_id"),
+                "student_id": d.get("student_id"),
+                "violation_type": d.get("violation_type"),
+                "strike_number": d.get("strike_number") or 1,
+                "image_url": d.get("image_url"),
+                "details": details,
+                "notes": d.get("notes"),
+                "timestamp": d.get("timestamp")
+            })
+        conn.close()
+        if results:
+            return results
+    except Exception as e:
+        print(f"[biometrics] SQLite incidents fetch fallback: {e}")
+
+    # 3. Fallback to in-memory
+    return EXAM_INCIDENTS.get(sid, [])
+
+
+async def _record_exam_incident_internal(
+    session_id: str,
+    student_id: str,
+    violation_type: str,
+    strike_number: int,
+    file: Optional[UploadFile] = None,
+    details: Optional[str] = None,
+    notes: Optional[str] = None,
+    assignment_id: Optional[str] = None,
+):
+    """
+    Records an exam proctoring violation incident (multiple_faces, face_mismatch, no_face, gaze_out_of_bounds),
+    persists the camera snapshot on disk for instructor review, and updates the student strike tally.
+    """
+    sid = session_id.strip()
+    uid = student_id.strip()
+    v_type = violation_type.strip()
+    strike_num = int(strike_number)
+
+    # Save photo snapshot if provided
+    image_url = None
+    if file:
+        try:
+            from pathlib import Path
+            root_dir = Path(__file__).resolve().parent.parent.parent.parent
+            upload_dir = (root_dir / "uploads" / "exam_incidents").resolve()
+            upload_dir.mkdir(parents=True, exist_ok=True)
+
+            ts_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")[:19]
+            clean_sid = "".join(c for c in sid if c.isalnum() or c in "-_")
+            clean_uid = "".join(c for c in uid if c.isalnum() or c in "-_")
+            filename = f"{clean_sid}_{clean_uid}_strike{strike_num}_{ts_str}.jpg"
+            file_path = upload_dir / filename
+
+            contents = await file.read()
+            with open(file_path, "wb") as f_out:
+                f_out.write(contents)
+            image_url = f"/uploads/exam_incidents/{filename}"
+        except Exception as e:
+            print(f"[biometrics] Error saving incident snapshot: {e}")
+
+    details_dict = {}
+    if details:
+        try:
+            details_dict = json.loads(details) if isinstance(details, str) else details
+        except Exception:
+            details_dict = {"raw": details}
+
+    iso_timestamp = datetime.utcnow().isoformat()
+    incident_record = {
+        "id": f"inc_{int(datetime.utcnow().timestamp()*1000)}",
+        "session_id": sid,
+        "assignment_id": assignment_id,
+        "student_id": uid,
+        "violation_type": v_type,
+        "strike_number": strike_num,
+        "image_url": image_url,
+        "details": details_dict,
+        "notes": notes,
+        "timestamp": iso_timestamp
+    }
+
+    # 1. In-memory
+    if sid not in EXAM_INCIDENTS:
+        EXAM_INCIDENTS[sid] = []
+    EXAM_INCIDENTS[sid].append(incident_record)
+
+    # 2. SQLite
+    try:
+        from .telemetry import DB_FILE
+        import sqlite3
+        conn = sqlite3.connect(DB_FILE, timeout=30.0)
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO exam_incidents (
+                session_id, assignment_id, student_id, violation_type,
+                strike_number, image_url, details_json, notes, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            sid, assignment_id, uid, v_type, strike_num, image_url,
+            json.dumps(details_dict), notes, iso_timestamp
+        ))
+        row_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        incident_record["id"] = str(row_id)
+    except Exception as e:
+        print(f"[biometrics] SQLite incident insert error: {e}")
+
+    # 3. PostgreSQL
+    try:
+        from .database import _get_async_session
+        async_session_factory = _get_async_session()
+        if async_session_factory:
+            async with async_session_factory() as session:
+                from .db_models import ExamProctoringIncident
+                db_inc = ExamProctoringIncident(
+                    session_id=sid,
+                    assignment_id=assignment_id,
+                    student_id=uid,
+                    violation_type=v_type,
+                    strike_number=strike_num,
+                    image_url=image_url,
+                    details=details_dict,
+                    notes=notes,
+                )
+                session.add(db_inc)
+                await session.commit()
+                incident_record["id"] = str(db_inc.id)
+    except Exception as e:
+        print(f"[biometrics] PG incident insert error: {e}")
+
+    print(
+        f"🚨 [EXAM-PROCTORING-INCIDENT] Session: {sid} | Student: {uid} | "
+        f"Strike: #{strike_num}/3 | Violation: {v_type} | Image: {image_url}",
+        flush=True
+    )
+
+    return incident_record
+
+
+@router.post("/exam-incident", response_model=ExamIncidentResponse)
+async def report_exam_incident_endpoint(
+    session_id: str = Form(...),
+    student_id: str = Form(...),
+    violation_type: str = Form(...),
+    strike_number: int = Form(...),
+    file: Optional[UploadFile] = File(None),
+    details: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
+    assignment_id: Optional[str] = Form(None),
+):
+    return await _record_exam_incident_internal(
+        session_id=session_id,
+        student_id=student_id,
+        violation_type=violation_type,
+        strike_number=strike_number,
+        file=file,
+        details=details,
+        notes=notes,
+        assignment_id=assignment_id,
+    )
+
+
+@router.post("/exam/{session_id}/incident", response_model=ExamIncidentResponse)
+async def report_exam_incident_path_endpoint(
+    session_id: str,
+    student_id: str = Form(...),
+    violation_type: str = Form(...),
+    strike_number: int = Form(...),
+    file: Optional[UploadFile] = File(None),
+    details: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
+    assignment_id: Optional[str] = Form(None),
+):
+    return await _record_exam_incident_internal(
+        session_id=session_id,
+        student_id=student_id,
+        violation_type=violation_type,
+        strike_number=strike_number,
+        file=file,
+        details=details,
+        notes=notes,
+        assignment_id=assignment_id,
+    )
+
+
+@router.get("/exam/{session_id}/incidents", response_model=ExamIncidentsListResponse)
+async def get_exam_incidents_endpoint(session_id: str):
+    """Returns all recorded proctoring incident evidence photos for an exam session."""
+    sid = session_id.strip()
+    incidents = await get_session_incidents_list(sid)
+    return {
+        "session_id": sid,
+        "total_incidents": len(incidents),
+        "strikes": len(incidents),
+        "incidents": incidents
+    }
+
+
+@router.get("/exam-incidents", response_model=ExamIncidentsListResponse)
+async def list_exam_incidents_endpoint(
+    session_id: Optional[str] = Query(None),
+    student_id: Optional[str] = Query(None)
+):
+    """Query proctoring incidents by session_id or student_id."""
+    sid = session_id.strip() if session_id else ""
+    incidents = await get_session_incidents_list(sid) if sid else []
+    return {
+        "session_id": sid or "all",
+        "total_incidents": len(incidents),
+        "strikes": len(incidents),
+        "incidents": incidents
+    }
+

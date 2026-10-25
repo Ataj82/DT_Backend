@@ -51,9 +51,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy the rest of your application code
 COPY . /app/
+RUN chmod +x /app/entrypoint.sh
+
 # Expose the internal port
 EXPOSE 7000
 ENV PYTHONPATH=/app
 
-# Start Uvicorn directly
+# Default entrypoint runs migrations then launches CMD
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7000"]
+

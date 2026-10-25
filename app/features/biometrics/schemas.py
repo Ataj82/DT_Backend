@@ -149,6 +149,8 @@ class TelemetryResponse(BaseModel):
     gaze_direction: str = "Center"
     gaze_x_ratio: float = 0.5
     face_detected: bool = True
+    multiple_faces: bool = False
+    face_count: int = 1
     face_box: Optional[List[int]] = None
     eyes_detected: Optional[int] = 0
     is_calibrated: bool = False
@@ -215,3 +217,23 @@ class ExamDistractionLogResponse(BaseModel):
     total_distractions: Optional[int] = 0
     total_distractions_count: Optional[int] = 0
     event: Optional[Dict[str, Any]] = None
+
+
+class ExamIncidentResponse(BaseModel):
+    id: Optional[str] = None
+    session_id: str
+    assignment_id: Optional[str] = None
+    student_id: str
+    violation_type: str
+    strike_number: int
+    image_url: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    notes: Optional[str] = None
+    timestamp: Optional[str] = None
+
+
+class ExamIncidentsListResponse(BaseModel):
+    session_id: str
+    total_incidents: int = 0
+    strikes: int = 0
+    incidents: List[ExamIncidentResponse] = []

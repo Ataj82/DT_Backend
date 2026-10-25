@@ -385,6 +385,9 @@ def analyze_focal_attention(
     if _FACE_CASCADE is None and len(frontals) == 0:
         frontals = [[int(w * 0.25), int(h * 0.2), int(w * 0.5), int(h * 0.6)]]
 
+    face_count = len(frontals)
+    has_multiple_faces = bool(face_count > 1)
+
     # CASE A: No frontal face detected
     if len(frontals) == 0:
         if has_profile:
@@ -404,6 +407,8 @@ def analyze_focal_attention(
                 "roll": 0.0,
                 "gaze_direction": "Looking Away",
                 "face_detected": True,
+                "multiple_faces": False,
+                "face_count": 1,
                 "face_box": pbox,
                 "gaze_x_ratio": norm_x,
                 "eyes_detected": 0,
@@ -454,14 +459,16 @@ def analyze_focal_attention(
         norm_y = 0.50
         feat_vec = [math.radians(-10.0), math.radians(yaw), 0.0, float(math.radians(yaw)), 0.0, norm_x, norm_y]
         return {
-            "attention_score": 18.0,
+            "attention_score": 18.0 if not has_multiple_faces else 10.0,
             "is_focused": False,
-            "status": "Head Turned Away",
+            "status": "Multiple Faces in Frame" if has_multiple_faces else "Head Turned Away",
             "pitch": -10.0,
             "yaw": yaw,
             "roll": 0.0,
             "gaze_direction": "Looking Away",
             "face_detected": True,
+            "multiple_faces": has_multiple_faces,
+            "face_count": face_count,
             "face_box": [int(fx), int(fy), int(fw), int(fh)],
             "gaze_x_ratio": norm_x,
             "eyes_detected": len(eyes),
@@ -496,14 +503,16 @@ def analyze_focal_attention(
         yaw_val = round(float(center_dx * 30.0), 1)
         feat_vec = [math.radians(-22.0), math.radians(yaw_val), 0.0, float(math.radians(yaw_val)), 0.0, 0.50, 0.90]
         return {
-            "attention_score": 15.0,
+            "attention_score": 15.0 if not has_multiple_faces else 10.0,
             "is_focused": False,
-            "status": "Looking Down / Away (No Eye Contact)",
+            "status": "Multiple Faces in Frame" if has_multiple_faces else "Looking Down / Away (No Eye Contact)",
             "pitch": -22.0,
             "yaw": yaw_val,
             "roll": 0.0,
             "gaze_direction": "Looking Down",
             "face_detected": True,
+            "multiple_faces": has_multiple_faces,
+            "face_count": face_count,
             "face_box": [int(fx), int(fy), int(fw), int(fh)],
             "gaze_x_ratio": 0.50,
             "eyes_detected": 0,
@@ -676,7 +685,11 @@ def analyze_focal_attention(
         gaze_dir = "Direct / Center"
 
     # Status Labeling
-    if attention_score >= 70.0:
+    if has_multiple_faces:
+        status_label = "Multiple Faces in Frame"
+        is_focused = False
+        attention_score = min(attention_score, 10.0)
+    elif attention_score >= 70.0:
         status_label = "Focused on Focal Point"
         is_focused = True
     elif attention_score >= 50.0:
@@ -710,6 +723,8 @@ def analyze_focal_attention(
         "roll": round(roll, 1),
         "gaze_direction": gaze_dir,
         "face_detected": True,
+        "multiple_faces": has_multiple_faces,
+        "face_count": face_count,
         "face_box": [int(fx), int(fy), int(fw), int(fh)],
         "gaze_x_ratio": round(avg_gx, 2),
         "eyes_detected": len(eyes),
@@ -731,6 +746,8 @@ def _fallback_result(msg: str) -> dict:
         "roll": 0.0,
         "gaze_direction": "Unknown",
         "face_detected": False,
+        "multiple_faces": False,
+        "face_count": 0,
         "face_box": [],
         "gaze_x_ratio": 0.50,
         "eyes_detected": 0,

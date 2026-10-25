@@ -1461,6 +1461,13 @@ async def get_exam_session_detail(
 
     title = assignment.title if assignment else "آزمون شفاهی"
 
+    incidents_list = []
+    try:
+        from app.features.biometrics.router import get_session_incidents_list
+        incidents_list = await get_session_incidents_list(session.id)
+    except Exception as e:
+        print(f"[exam_session_detail] Incidents fetch warning: {e}")
+
     return ExamSessionDetailResponse(
         session_id=session.id,
         assignment_id=assignment.id if assignment else "",
@@ -1480,6 +1487,7 @@ async def get_exam_session_detail(
         turns=turns_list,
         goals=goals_detail,
         recommendations=recommendations_detail,
+        incidents=incidents_list,
     )
 
 
