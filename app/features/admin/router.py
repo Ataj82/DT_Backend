@@ -781,7 +781,7 @@ async def get_admin_exams_schedule(db: AsyncSession = Depends(get_db)):
             "start_h": round(s_h, 2),
             "end_h": round(e_h, 2),
             "duration": dur,
-            "impact": "سبک (۱۵٪ لود)" if students < 50 else "متوسط (۳۵٪ لود)" if students < 150 else "سنگین (۶۰٪ لود)"
+            "impact": "کم‌جمعیت" if students < 30 else "متوسط" if students < 100 else "پرجمعیت"
         })
 
     # Ensure today's date exists in days_dict
@@ -821,23 +821,6 @@ async def get_admin_exams_schedule(db: AsyncSession = Depends(get_db)):
         gregorian_date_str = f"{gy}/{gm:02d}/{gd:02d}"
         gregorian_day_number = str(gd)
 
-        # Calculate hourly load (8 to 22)
-        hourly_load = {}
-        for h in range(8, 23):
-            # Sum active concurrent students at hour h
-            active_students = 0
-            for ex in exams_list:
-                if ex["start_h"] <= h < ex["end_h"] or (ex["start_h"] <= h <= ex["start_h"] + 0.5):
-                    active_students += ex["studentCount"]
-
-            if active_students > 0:
-                load = min(95, int((active_students / 1000) * 80) + 15)
-            else:
-                load = 8 + (idx * 3) % 15  # baseline realistic idle load
-            hourly_load[h] = load
-
-        overall_load = max(hourly_load.values()) if hourly_load else 15
-
         # Group overlapping exams into summary clusters for the timeline
         exam_groups = []
         if exams_list:
@@ -860,8 +843,8 @@ async def get_admin_exams_schedule(db: AsyncSession = Depends(get_db)):
             g_start = round(min(e["start_h"] for e in cluster), 2)
             g_end = round(max(e["end_h"] for e in cluster), 2)
             g_students = sum(e["studentCount"] for e in cluster)
-            g_load = min(98, int((g_students / 1000) * 85) + 15)
-            status_str = "critical" if g_load > 80 else "moderate" if g_load >= 50 else "safe"
+            has_conflict = len(cluster) > 1
+            status_str = "conflict" if has_conflict else "single"
             
             s_h_int, s_m_int = int(g_start), int(round((g_start - int(g_start)) * 60))
             e_h_int, e_m_int = int(g_end), int(round((g_end - int(g_end)) * 60))
@@ -874,11 +857,11 @@ async def get_admin_exams_schedule(db: AsyncSession = Depends(get_db)):
                 "endHour": g_end,
                 "timeLabel": time_lbl,
                 "timeLabelEn": time_lbl_en,
-                "serverLoad": g_load,
                 "totalStudents": g_students,
+                "hasConflict": has_conflict,
                 "status": status_str,
-                "note": f"تداخل {len(cluster)} آزمون همزمان" if len(cluster) > 1 else f"تک‌آزمون - {cluster[0]['course']}",
-                "noteEn": f"{len(cluster)} concurrent overlapping exams" if len(cluster) > 1 else f"Single Exam - {cluster[0]['course']}",
+                "note": f"تداخل {len(cluster)} آزمون همزمان" if has_conflict else f"تک‌آزمون - {cluster[0]['course']}",
+                "noteEn": f"{len(cluster)} concurrent overlapping exams" if has_conflict else f"Single Exam - {cluster[0]['course']}",
                 "exams": cluster,
             })
 
@@ -896,8 +879,6 @@ async def get_admin_exams_schedule(db: AsyncSession = Depends(get_db)):
             "gregorianDayNumber": gregorian_day_number,
             "gregorianMonth": gregorian_month_name,
             "gregorianMonthFull": gregorian_month_full,
-            "overallLoad": overall_load,
-            "hourlyLoad": hourly_load,
             "exams": exams_list,
             "examGroups": formatted_groups,
         })
@@ -906,7 +887,5 @@ async def get_admin_exams_schedule(db: AsyncSession = Depends(get_db)):
         "total_exams": len(rows),
         "days": days_result,
         "today_raw": today_raw,
-        "cluster_status": "active",
-        "total_capacity": 1000,
     }
 
