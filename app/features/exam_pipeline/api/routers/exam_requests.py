@@ -804,6 +804,56 @@ async def _sync_db_quizzes_to_pipeline(multiuser_service, framework, student_id_
                         assignment.configuration_snapshot["student_slots"] = student_slots
                         assignment.configuration_snapshot["gap_minutes"] = q.gap_minutes or 5
                         multiuser_service.repository.save_assignment(assignment)
+                elif assignment and not assignment.students and q.student_ids:
+                    try:
+                        s_ids = [str(s).strip() for s in (q.student_ids or []) if str(s).strip()]
+                        if s_ids:
+                            for s_id in s_ids:
+                                if not multiuser_service.repository.get_user(s_id):
+                                    multiuser_service.repository.save_user(
+                                        User(
+                                            id=s_id,
+                                            email=f"{s_id}@dt.internal",
+                                            display_name=f"Student {s_id}",
+                                            password_hash="",
+                                            role=UserRole.STUDENT,
+                                        )
+                                    )
+                            prof_id = str(q.teacher_id or "10000000-0000-4000-8000-000000000001")
+                            prof = multiuser_service.repository.get_user(prof_id) or User(
+                                id=prof_id,
+                                email="teacher@dt.internal",
+                                display_name="Teacher",
+                                password_hash="",
+                                role=UserRole.PROFESSOR,
+                            )
+                            assignment = multiuser_service.enroll_students(
+                                professor=prof,
+                                assignment_id=assignment.id,
+                                student_ids=s_ids,
+                            )
+                            dur_mins = assignment.duration_seconds // 60
+                            _, _, init_slots = _generate_time_slots(
+                                assignment.starts_at,
+                                assignment.ends_at,
+                                duration_minutes=dur_mins,
+                                gap_minutes=q.gap_minutes or 5,
+                            )
+                            student_slots = {}
+                            for i, sid in enumerate(s_ids):
+                                if i < len(init_slots):
+                                    student_slots[sid] = {
+                                        "slot_index": init_slots[i].slot_index,
+                                        "start_time": init_slots[i].start_time,
+                                        "end_time": init_slots[i].end_time,
+                                    }
+                            if assignment.configuration_snapshot is None:
+                                assignment.configuration_snapshot = {}
+                            assignment.configuration_snapshot["student_slots"] = student_slots
+                            assignment.configuration_snapshot["gap_minutes"] = q.gap_minutes or 5
+                            multiuser_service.repository.save_assignment(assignment)
+                    except Exception as exc:
+                        logging.getLogger(__name__).warning("Update sync enroll warning: %s", exc)
     except Exception as exc:
         logging.getLogger(__name__).warning("Error syncing DB quizzes to pipeline: %s", exc)
 
@@ -1148,13 +1198,141 @@ async def get_teacher_exam_results(
     if not assignment:
         await _sync_db_quizzes_to_pipeline(multiuser_service, framework)
         assignment = multiuser_service.repository.get_assignment(assignment_id)
-        if not assignment:
-            raise HTTPException(status_code=404, detail="Exam assignment not found")
+
+    if not assignment:
+        # On-demand direct lookup and sync from PostgreSQL by UUID
+        try:
+            import uuid
+            from app.core.database import async_session
+            from app.features.lessons.models import LessonQuiz
+            from app.features.exam_pipeline.knowledge.models import KnowledgeBase
+            from app.features.exam_pipeline.goal.models import GoalModel
+            from app.features.exam_pipeline.multiuser.models import AssignmentStatus, UserRole
+
+            q_uuid = uuid.UUID(assignment_id)
+            async with async_session() as session:
+                db_quiz = await session.get(LessonQuiz, q_uuid)
+                if db_quiz:
+                    kb_id = f"kb_{db_quiz.lesson_id}"
+                    kb = framework.services.knowledge_service.get_knowledge_base(kb_id)
+                    if not kb:
+                        kb = KnowledgeBase(
+                            id=kb_id,
+                            title=f"Knowledge Base: {db_quiz.title}",
+                            description=db_quiz.description or "",
+                        )
+                        framework.services.knowledge_service.save(kb)
+
+                    goals_list = db_quiz.goals or [f"مباحث آزمون {db_quiz.title}"]
+                    dur_mins = db_quiz.duration_minutes or 20
+                    goal_model = GoalModel.create_from_input(
+                        knowledge_base_id=kb_id,
+                        goals_data=goals_list,
+                        title=db_quiz.title,
+                        course_id=str(db_quiz.lesson_id),
+                        lesson_id=str(db_quiz.lesson_id),
+                        total_duration_minutes=dur_mins,
+                    )
+                    framework.services.goal_service.save(goal_model)
+                    allocations = goal_model.calculate_time_allocations(dur_mins * 60)
+
+                    prof_id = str(db_quiz.teacher_id or current_user.id)
+                    prof = multiuser_service.repository.get_user(prof_id)
+                    if not prof:
+                        prof = User(
+                            id=prof_id,
+                            email="teacher@dt.internal",
+                            display_name="Teacher",
+                            password_hash="",
+                            role=UserRole.PROFESSOR,
+                        )
+                        multiuser_service.repository.save_user(prof)
+
+                    quiz_lang = getattr(db_quiz, "language", None) or "fa"
+                    assignment = multiuser_service.create_assignment(
+                        professor=prof,
+                        title=db_quiz.title,
+                        description=db_quiz.description or f"آزمون درس {db_quiz.title}",
+                        knowledge_base_id=kb_id,
+                        goal_model_id=goal_model.id,
+                        duration_seconds=dur_mins * 60,
+                        goal_time_allocations_seconds=allocations,
+                        passing_threshold=0.70,
+                        allow_followup_questions=True,
+                        language=quiz_lang,
+                        starts_at=db_quiz.start_at,
+                        ends_at=db_quiz.end_at,
+                        assignment_id=str(db_quiz.quiz_id),
+                    )
+                    assignment.status = AssignmentStatus.PUBLISHED if db_quiz.is_active is not False else AssignmentStatus.CLOSED
+                    if assignment.configuration_snapshot is None:
+                        assignment.configuration_snapshot = {}
+                    assignment.configuration_snapshot["language"] = quiz_lang
+                    if db_quiz.exam_date:
+                        assignment.configuration_snapshot["exam_date"] = db_quiz.exam_date
+                    assignment.configuration_snapshot["gap_minutes"] = db_quiz.gap_minutes or 5
+                    multiuser_service.repository.save_assignment(assignment)
+        except Exception as e_ondemand:
+            logging.getLogger(__name__).warning("On-demand quiz sync failed: %s", e_ondemand)
+
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Exam assignment not found")
 
     config_snapshot = assignment.configuration_snapshot or {}
     student_slots = config_snapshot.get("student_slots", {})
     gap_mins = config_snapshot.get("gap_minutes", 5)
     dur_mins = assignment.duration_seconds // 60
+
+    # Auto-enroll students if assignment was synced without enrollments
+    if not assignment.students:
+        try:
+            import uuid
+            from app.core.database import async_session
+            from app.features.lessons.models import LessonQuiz
+            from app.features.exam_pipeline.multiuser.models import UserRole
+
+            q_uuid = uuid.UUID(assignment.id)
+            async with async_session() as session:
+                db_quiz = await session.get(LessonQuiz, q_uuid)
+                if db_quiz and db_quiz.student_ids:
+                    s_ids = [str(s).strip() for s in db_quiz.student_ids if str(s).strip()]
+                    for s_id in s_ids:
+                        if not multiuser_service.repository.get_user(s_id):
+                            multiuser_service.repository.save_user(
+                                User(
+                                    id=s_id,
+                                    email=f"{s_id}@dt.internal",
+                                    display_name=f"Student {s_id}",
+                                    password_hash="",
+                                    role=UserRole.STUDENT,
+                                )
+                            )
+                    assignment = multiuser_service.enroll_students(
+                        professor=current_user,
+                        assignment_id=assignment.id,
+                        student_ids=s_ids,
+                    )
+                    _, _, init_slots = _generate_time_slots(
+                        assignment.starts_at,
+                        assignment.ends_at,
+                        duration_minutes=dur_mins,
+                        gap_minutes=gap_mins,
+                    )
+                    s_slots = {}
+                    for i, sid in enumerate(s_ids):
+                        if i < len(init_slots):
+                            s_slots[sid] = {
+                                "slot_index": init_slots[i].slot_index,
+                                "start_time": init_slots[i].start_time,
+                                "end_time": init_slots[i].end_time,
+                            }
+                    if assignment.configuration_snapshot is None:
+                        assignment.configuration_snapshot = {}
+                    assignment.configuration_snapshot["student_slots"] = s_slots
+                    student_slots = s_slots
+                    multiuser_service.repository.save_assignment(assignment)
+        except Exception as e_enroll:
+            logging.getLogger(__name__).warning("Auto-enrolling students for results warning: %s", e_enroll)
 
     w_start, w_end, _ = _generate_time_slots(
         assignment.starts_at,

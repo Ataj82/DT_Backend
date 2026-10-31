@@ -283,14 +283,16 @@ async def get_quiz_attempts(
 )
 async def explain_quiz_answer(
     payload: QuizExplainAnswerRequest,
+    db: AsyncSession = Depends(get_db),
 ):
     """
     ارسال پرامپت آماده به سرور مدل زبانی (Qwen در http://94.184.177.171:8000/v1)
-    و تولید یک پاسخنامه تحلیلی و آموزشی جامع به زبان فارسی.
+    و تولید یک پاسخنامه تحلیلی و آموزشی جامع به زبان فارسی با قابلیت شخصی‌سازی پرامپت به ازای درس.
     """
     import asyncio
     from app.features.exam_pipeline.llm.provider import LLMProvider
     from app.features.exam_pipeline.configuration.llm_configuration import LLMConfiguration
+    from app.features.prompts.service import PromptService
 
     # Build options text if available
     options_text = ""
@@ -353,13 +355,21 @@ async def explain_quiz_answer(
 
     is_incorrect = check_is_incorrect(payload.selected_answer, payload.answer, payload.options)
 
-    if is_incorrect:
+    # Resolve configured prompt for this specific course or global fallback
+    resolved_prompt = await PromptService.resolve_prompt(
+        db, prompt_type="quiz-explainer", lesson_id=payload.lesson_id
+    )
+
+    if resolved_prompt:
+        system_prompt = resolved_prompt
+    elif is_incorrect:
         system_prompt = (
             "شما یک استاد و تحلیل‌گر آزمون هستید. برای این سوال، فقط و فقط دو بخش زیر را بسیار صریح، کوتاه و علمی بنویس:\n"
             "۱. استدلال علمی: دلیل علمی درستی گزینه صحیح در ۱ الی ۲ جمله کوتاه.\n"
             "۲. علت اشتباه احتمالی: در ۱ جمله کوتاه توضیح بده چرا گزینه انتخابی کاربر نادرست است یا چه تله مفهومی وجود داشته است.\n"
             "قوانین اکید: از هرگونه سلام، مقدمه‌چینی، بررسی سایر گزینه‌ها و بخش‌بندی‌های دیگر اکیداً خودداری کن."
         )
+
         user_parts = [f"صورت سوال: {payload.question}"]
         if options_text:
             user_parts.append(f"گزینه‌ها:\n{options_text}")

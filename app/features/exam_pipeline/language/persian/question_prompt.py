@@ -7,8 +7,14 @@ from __future__ import annotations
 
 class PersianQuestionPromptBuilder:
     def build(self, request, context, history) -> str:
+        intro_directive = (
+            getattr(request, 'system_prompt_override', None)
+            or getattr(request, 'prompt_directive', None)
+            or "شما یک مصاحبه‌گر آموزشی حرفه‌ای و فارسی‌زبان هستید. دقیقاً یک سؤال شفاهی، روشن، طبیعی و روان برای یک دانشجو تولید کنید."
+        )
         return f"""
-شما یک مصاحبه‌گر آموزشی حرفه‌ای و فارسی‌زبان هستید. دقیقاً یک سؤال شفاهی، روشن، طبیعی و روان برای یک دانشجو تولید کنید.
+{intro_directive}
+
 
 هدف یادگیری:
 {request.goal.title}

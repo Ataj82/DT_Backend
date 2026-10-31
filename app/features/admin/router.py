@@ -9,6 +9,7 @@ from sqlalchemy import select, func, or_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db
+from app.core.security import get_password_hash
 from app.features.users.models import User
 from app.features.lessons.models import Lesson, LessonMember, LessonQuiz
 from app.features.chat.models import Chat
@@ -88,6 +89,16 @@ class AdminUserItem(BaseModel):
     is_active: bool = True
     created_at: Optional[datetime] = None
     last_seen_at: Optional[datetime] = None
+
+
+class AdminUserCreate(BaseModel):
+    username: str = Field(..., min_length=3, max_length=64)
+    password: str = Field(..., min_length=4, max_length=128)
+    first_name: Optional[str] = Field(default=None, max_length=100)
+    last_name: Optional[str] = Field(default=None, max_length=100)
+    user_type: str = Field(default="STUDENT")
+    bio: Optional[str] = Field(default=None, max_length=500)
+    is_active: bool = True
 
 
 class AdminTeacherOption(BaseModel):
@@ -333,6 +344,97 @@ async def get_admin_users(
         )
 
     return items
+
+
+@router.post("/users", response_model=AdminUserItem, status_code=status.HTTP_201_CREATED)
+async def create_admin_user(data: AdminUserCreate, db: AsyncSession = Depends(get_db)):
+    """Creates a new user account (Student, Teacher, or Admin) directly from the admin panel."""
+    username_clean = data.username.strip().lower()
+    if not username_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="نام کاربری نمی‌تواند خالی باشد.",
+        )
+
+    if " " in username_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="نام کاربری نمی‌تواند شامل فاصله باشد.",
+        )
+
+    # Check if username is already registered
+    existing_user = await db.execute(
+        select(User).where(func.lower(User.username) == username_clean)
+    )
+    if existing_user.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"کاربر با نام کاربری '{data.username.strip()}' قبلاً در سامانه ثبت شده است.",
+        )
+
+    # Validate role
+    role = data.user_type.strip().upper()
+    valid_roles = {"STUDENT", "TEACHER", "ADMIN"}
+    if role not in valid_roles:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"نقش کاربری نامعتبر است. نقش‌های معتبر: {', '.join(valid_roles)}",
+        )
+
+    # Create new user
+    new_user = User(
+        username=username_clean,
+        hashed_password=get_password_hash(data.password),
+        first_name=data.first_name.strip() if data.first_name and data.first_name.strip() else None,
+        last_name=data.last_name.strip() if data.last_name and data.last_name.strip() else None,
+        bio=data.bio.strip() if data.bio and data.bio.strip() else None,
+        user_type=role,
+        is_active=data.is_active,
+    )
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+
+    full_name = f"{new_user.first_name or ''} {new_user.last_name or ''}".strip() or new_user.username
+
+    return AdminUserItem(
+        user_id=new_user.user_id,
+        username=new_user.username,
+        first_name=new_user.first_name,
+        last_name=new_user.last_name,
+        full_name=full_name,
+        user_type=new_user.user_type,
+        is_active=bool(new_user.is_active),
+        created_at=new_user.created_at,
+        last_seen_at=new_user.last_seen_at,
+    )
+
+
+@router.patch("/users/{user_id}/status", response_model=AdminUserItem)
+async def toggle_admin_user_status(user_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Toggles active/inactive status for a user."""
+    stmt = select(User).where(User.user_id == user_id)
+    res = await db.execute(stmt)
+    user = res.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="کاربر یافت نشد.")
+
+    user.is_active = not bool(user.is_active)
+    await db.commit()
+    await db.refresh(user)
+
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username
+    return AdminUserItem(
+        user_id=user.user_id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        full_name=full_name,
+        user_type=user.user_type,
+        is_active=bool(user.is_active),
+        created_at=user.created_at,
+        last_seen_at=user.last_seen_at,
+    )
 
 
 @router.get("/teachers", response_model=List[AdminTeacherOption])

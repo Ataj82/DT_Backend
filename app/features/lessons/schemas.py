@@ -231,9 +231,13 @@ class QuizExplainAnswerRequest(BaseModel):
     selected_answer: Optional[Union[str, int]] = Field(
         default=None, description="پاسخ انتخابی دانشجو"
     )
+    lesson_id: Optional[UUID] = Field(
+        default=None, description="شناسه درس برای اعمال پرامپت اختصاصی"
+    )
     language: Optional[str] = Field(
         default="fa", description="زبان تحلیل پاسخ (پیش‌فرض فارسی)"
     )
+
 
 
 class QuizExplainAnswerResponse(BaseModel):

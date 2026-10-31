@@ -10,6 +10,7 @@ from app.features.navigation.router import router as navigation_router
 from app.features.exam_pipeline.router import router as exam_pipeline_router
 from app.features.biometrics.router import router as biometrics_router
 from app.features.admin.router import router as admin_router
+from app.features.prompts.router import router as prompts_router
 
 api_router = APIRouter()
 
@@ -22,6 +23,8 @@ api_router.include_router(navigation_router, prefix="/navigation", tags=["Naviga
 api_router.include_router(chat_router, prefix="/chats", tags=["Chats"])
 api_router.include_router(lesson_router, prefix="/lessons", tags=["Lessons"])
 api_router.include_router(admin_router, prefix="/admin", tags=["Admin"])
+api_router.include_router(prompts_router, prefix="/admin/prompts", tags=["Admin Prompts"])
+api_router.include_router(prompts_router, prefix="/prompts", tags=["Prompts"])
 
 # ==================== Biometrics & Face Proctoring ====================
 api_router.include_router(biometrics_router, prefix="/biometrics", tags=["Biometrics"])
@@ -29,3 +32,4 @@ api_router.include_router(biometrics_router, prefix="/biometrics", tags=["Biomet
 # ==================== Adaptive Exam Pipeline ====================
 api_router.include_router(exam_pipeline_router, prefix="/exam-pipeline", tags=["Adaptive Exam Pipeline"])
 api_router.include_router(exam_pipeline_router)
+
