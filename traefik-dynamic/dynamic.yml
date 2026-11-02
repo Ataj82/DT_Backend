@@ -12,25 +12,25 @@ http:
       middlewares:
         - strip-llm-prefix
 
-    # 1. Microservice Routing for Legacy LLM and Processing Services
+    # 1. Microservice Routing for Legacy LLM and Processing Services (priority 45 < bot-svc 50)
     legacy-llm-router:
-      rule: "PathPrefix(`/api/ask`) || PathPrefix(`/api/generate-pdf/`) || PathPrefix(`/api/admin`) || PathPrefix(`/api/quiz`) || PathPrefix(`/api/contexts`) || PathPrefix(`/api/voice`)"
+      rule: "PathPrefix(`/api/ask`) || PathPrefix(`/api/generate-pdf/`) || PathPrefix(`/api/admin`) || PathPrefix(`/api/quiz`) || PathPrefix(`/api/contexts`) || PathPrefix(`/api/voice`) || PathPrefix(`/api/get-user-files`) || PathPrefix(`/api/upload-photo`) || PathPrefix(`/api/upload-audio`) || PathPrefix(`/api/delete-audio`) || PathPrefix(`/api/generate-quiz`) || PathPrefix(`/api/upload`) || PathPrefix(`/api`)"
       service: legacy-llm-service
       entryPoints:
         - web
         - websecure
       tls: {}
-      priority: 100
+      priority: 45
 
-    # 2. Frontend fallback route (dev server fallback)
-    frontend-host-router:
+    # 2. Production Frontend Route
+    frontend-router:
       rule: "PathPrefix(`/`)"
-      service: frontend-host-service
+      service: frontend-service
       entryPoints:
         - web
         - websecure
       tls: {}
-      priority: 5
+      priority: 10
 
   middlewares:
     strip-llm-prefix:
@@ -51,10 +51,10 @@ http:
           - url: "http://172.20.13.39:8506"
         passHostHeader: false
 
-    frontend-host-service:
+    frontend-service:
       loadBalancer:
         servers:
-          - url: "http://host.docker.internal:5173"
+          - url: "http://digital-twin-prod:80"
         passHostHeader: true
 
 tls:
