@@ -110,7 +110,11 @@ class ExamProctoringIncident(Base):
             "student_id": self.student_id,
             "violation_type": self.violation_type,
             "strike_number": self.strike_number,
-            "image_url": self.image_url,
+            "image_url": (
+                f"/bot/v1{self.image_url}"
+                if self.image_url and self.image_url.startswith("/uploads/")
+                else self.image_url
+            ),
             "details": self.details or {},
             "notes": self.notes,
             "timestamp": self.created_at.isoformat() if self.created_at else None,

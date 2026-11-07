@@ -58,6 +58,22 @@ EXAM_INCIDENTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads/exam_incidents", StaticFiles(directory=str(EXAM_INCIDENTS_DIR)), name="exam_incidents")
 app.mount("/api/v1/uploads/exam_incidents", StaticFiles(directory=str(EXAM_INCIDENTS_DIR)), name="exam_incidents_api")
 
+@app.get("/uploads/exam_incidents/{filename:path}")
+@app.get("/api/v1/uploads/exam_incidents/{filename:path}")
+async def get_exam_incident_snapshot(filename: str):
+    clean_filename = Path(filename.strip("/")).name
+    file_path = (EXAM_INCIDENTS_DIR / clean_filename).resolve()
+    if not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Incident snapshot not found on disk.",
+        )
+    return FileResponse(
+        path=str(file_path),
+        media_type="image/jpeg",
+        filename=clean_filename,
+    )
+
 # 2. Strict, authenticated & authorized file serving for chat attachments
 @app.get("/uploads/chat/{filename:path}")
 async def get_secure_chat_attachment(

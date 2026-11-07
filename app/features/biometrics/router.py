@@ -776,6 +776,9 @@ async def get_session_incidents_list(session_id: str) -> list[dict]:
                     details = json.loads(d["details_json"])
                 except Exception:
                     details = {}
+            img_url = d.get("image_url")
+            if img_url and img_url.startswith("/uploads/"):
+                img_url = f"/bot/v1{img_url}"
             results.append({
                 "id": str(d.get("id")),
                 "session_id": d.get("session_id"),
@@ -783,7 +786,7 @@ async def get_session_incidents_list(session_id: str) -> list[dict]:
                 "student_id": d.get("student_id"),
                 "violation_type": d.get("violation_type"),
                 "strike_number": d.get("strike_number") or 1,
-                "image_url": d.get("image_url"),
+                "image_url": img_url,
                 "details": details,
                 "notes": d.get("notes"),
                 "timestamp": d.get("timestamp")
@@ -795,7 +798,11 @@ async def get_session_incidents_list(session_id: str) -> list[dict]:
         print(f"[biometrics] SQLite incidents fetch fallback: {e}")
 
     # 3. Fallback to in-memory
-    return EXAM_INCIDENTS.get(sid, [])
+    mem_incidents = EXAM_INCIDENTS.get(sid, [])
+    for inc in mem_incidents:
+        if inc.get("image_url") and inc["image_url"].startswith("/uploads/"):
+            inc["image_url"] = f"/bot/v1{inc['image_url']}"
+    return mem_incidents
 
 
 async def _record_exam_incident_internal(
@@ -835,7 +842,7 @@ async def _record_exam_incident_internal(
             contents = await file.read()
             with open(file_path, "wb") as f_out:
                 f_out.write(contents)
-            image_url = f"/uploads/exam_incidents/{filename}"
+            image_url = f"/bot/v1/uploads/exam_incidents/{filename}"
         except Exception as e:
             print(f"[biometrics] Error saving incident snapshot: {e}")
 
