@@ -189,18 +189,28 @@ async def generate_goals_from_file(
     # Intelligently condense text to strictly <= 2000 chars (approx. 1000 - 1500 tokens)
     optimized_text = await asyncio.to_thread(optimize_content_for_llm, raw_text, file.filename, 2000)
 
-    # Resolve target language: "fa", "en", or "auto"
+    # Resolve target language: "fa", "ar", "en", or "auto"
     import re
     req_lang = (language or "").strip().lower()
     if req_lang in ("en", "english"):
         target_lang = "en"
+    elif req_lang in ("ar", "arabic", "العربية", "عربی"):
+        target_lang = "ar"
     elif req_lang in ("fa", "persian", "farsi"):
         target_lang = "fa"
     else:
         # Auto-detect from optimized_text
-        fa_chars = len(re.findall(r"[\u0600-\u06FF]", optimized_text))
+        ar_chars = len(re.findall(r"[\u0600-\u06FF]", optimized_text))
         en_chars = len(re.findall(r"[a-zA-Z]", optimized_text))
-        target_lang = "en" if en_chars > (fa_chars * 2) and fa_chars < 50 else "fa"
+        if en_chars > (ar_chars * 2) and ar_chars < 50:
+            target_lang = "en"
+        else:
+            fa_specific = len(re.findall(r"[\u067e\u0686\u0698\u06af]", optimized_text))
+            ar_specific = len(re.findall(r"[\u0629\u0649\u064a\u0643]", optimized_text))
+            if fa_specific == 0 and ar_specific >= 2:
+                target_lang = "ar"
+            else:
+                target_lang = "fa"
 
     goals = []
     # 1. Attempt LLM generation
@@ -229,6 +239,27 @@ async def generate_goals_from_file(
                 f"Exam Title: {exam_title or 'Oral Assessment'}\n"
                 f"Required Goal Count: Up to {target_max_goals} goals\n\n"
                 f"Key syllabus excerpts extracted from document '{file.filename}':\n\n"
+                f"{optimized_text}"
+            )
+        elif target_lang == "ar":
+            system_prompt = (
+                "You are an expert university professor and oral examination designer.\n"
+                "Analyze the following educational text/syllabus and extract the most important assessment goals (محاور وأهداف تقييم الاختبار الشفهي).\n"
+                f"Generate up to {target_max_goals} distinct, high-quality goals in ARABIC (العربية الفصحى).\n"
+                "CRITICAL REQUIREMENT FOR CONCEPTUAL CLARITY:\n"
+                "For every scientific, technical, or domain-specific concept, ALWAYS include the original English technical term in parentheses alongside the Arabic term (e.g. 'مفاهيم الذاكرة الظاهرية وأخطاء الصفحة (Virtual Memory & Page Fault)', 'خوارزميات جدولة المعالج (CPU Scheduling Algorithms)', 'مزامنة العمليات (Process Synchronization)'). This ensures deep conceptual understanding without awkward or confusing translations.\n"
+                "Each goal must have:\n"
+                "- title: Clear topic title in Arabic with the English technical term in parentheses\n"
+                "- description: Concise explanation of what is evaluated (in Arabic, preserving key English terms in parentheses)\n"
+                "- goal_type: exactly one of ['theoretical', 'practical', 'analytical']\n"
+                "- bloom_level: integer from 1 to 6 (1: تذكر, 2: فهم واستيعاب, 3: تطبيق, 4: تحليل, 5: تقييم, 6: ابتكار/إنشاء)\n\n"
+                "Return ONLY a valid JSON array of objects. Do not include markdown code block backticks if possible, or wrap cleanly in ```json ... ```. No extra commentary."
+            )
+            user_content = (
+                f"المادة / المساق: {course_title or 'نظم التشغيل'}\n"
+                f"عنوان الاختبار: {exam_title or 'الاختبار الشفهي'}\n"
+                f"عدد الأهداف المطلوب: حتى {target_max_goals} هدف (في حال توفر محتوى كافٍ، أنتج {target_max_goals} هدفاً بدقة)\n\n"
+                f"الملخص والمحاور المستخرجة من المستند «{file.filename}»:\n\n"
                 f"{optimized_text}"
             )
         else:
@@ -311,22 +342,28 @@ async def generate_goals_from_file(
                 "theory": "theoretical",
                 "تئوری": "theoretical",
                 "مفهومی": "theoretical",
+                "نظري": "theoretical",
+                "نظريّة": "theoretical",
+                "مفاهيمي": "theoretical",
                 "application": "practical",
                 "practical": "practical",
                 "کاربردی": "practical",
                 "عملی": "practical",
+                "تطبيقي": "practical",
+                "عملي": "practical",
                 "analysis": "analytical",
                 "analytical": "analytical",
                 "evaluation": "analytical",
                 "تحلیلی": "analytical",
+                "تحليلي": "analytical",
             }
             bloom_text_map = {
-                "1": 1, "remember": 1, "یادآوری": 1, "حفظ": 1,
-                "2": 2, "understand": 2, "comprehension": 2, "درک": 2, "درک مفاهیم": 2, "مفهومی": 2, "فهم": 2,
-                "3": 3, "apply": 3, "application": 3, "به‌کارگیری": 3, "بکارگیری": 3, "کاربرد": 3, "عملی": 3,
+                "1": 1, "remember": 1, "یادآوری": 1, "حفظ": 1, "تذكر": 1, "استرجاع": 1,
+                "2": 2, "understand": 2, "comprehension": 2, "درک": 2, "درک مفاهیم": 2, "مفهومی": 2, "فهم": 2, "استيعاب": 2,
+                "3": 3, "apply": 3, "application": 3, "به‌کارگیری": 3, "بکارگیری": 3, "کاربرد": 3, "عملی": 3, "تطبيق": 3, "تطبيقي": 3,
                 "4": 4, "analyze": 4, "analysis": 4, "تحلیل": 4, "تحلیلی": 4, "تحليلي": 4,
                 "5": 5, "evaluate": 5, "evaluation": 5, "ارزیابی": 5, "تقييم": 5, "تقييمي": 5, "داوری": 5,
-                "6": 6, "create": 6, "creation": 6, "synthesis": 6, "آفرینش": 6, "خلق": 6, "طراحی": 6,
+                "6": 6, "create": 6, "creation": 6, "synthesis": 6, "آفرینش": 6, "خلق": 6, "طراحی": 6, "ابتكار": 6, "إنشاء": 6, "انشاء": 6, "إبداع": 6,
             }
 
             for item in parsed[:max_goals]:
@@ -342,9 +379,13 @@ async def generate_goals_from_file(
                     if raw_bl.isdigit():
                         bl = max(1, min(6, int(raw_bl)))
 
+                    fallback_desc = (
+                        f"Assess {t}" if target_lang == "en"
+                        else (f"تقييم استيعاب {t}" if target_lang == "ar" else f"ارزیابی {t}")
+                    )
                     goals.append({
                         "title": t,
-                        "description": item.get("description", f"ارزیابی {t}"),
+                        "description": item.get("description", fallback_desc),
                         "goal_type": gt,
                         "bloom_level": bl,
                     })
@@ -368,9 +409,13 @@ async def generate_goals_from_file(
                 if isinstance(bloom_int, str):
                     bloom_map = {"remember": 1, "understand": 2, "apply": 3, "analyze": 4, "evaluate": 5, "create": 6}
                     bloom_int = bloom_map.get(bloom_int.lower(), 2)
+                fallback_desc = (
+                    f"Assess {g.title}" if target_lang == "en"
+                    else (f"تقييم استيعاب {g.title}" if target_lang == "ar" else f"ارزیابی {g.title}")
+                )
                 goals.append({
                     "title": g.title,
-                    "description": g.description or f"ارزیابی {g.title}",
+                    "description": g.description or fallback_desc,
                     "goal_type": "theoretical",
                     "bloom_level": int(bloom_int),
                 })
@@ -386,9 +431,13 @@ async def generate_goals_from_file(
         ]
         if candidate_lines:
             for top_title in candidate_lines[:max_goals]:
+                desc = (
+                    f"Assessing student mastery of {top_title}" if target_lang == "en"
+                    else (f"تقييم واستيعاب الطالب لموضوع {top_title}" if target_lang == "ar" else f"ارزیابی و سنجش تسلط دانشجو بر مبحث {top_title}")
+                )
                 goals.append({
                     "title": top_title,
-                    "description": f"ارزیابی و سنجش تسلط دانشجو بر مبحث {top_title}",
+                    "description": desc,
                     "goal_type": "theoretical",
                     "bloom_level": 2,
                 })
@@ -398,6 +447,11 @@ async def generate_goals_from_file(
                 goals = [
                     {"title": f"Core Concepts of {base_name}", "description": f"Understanding fundamental principles of {base_name}", "goal_type": "theoretical", "bloom_level": 2},
                     {"title": f"Analysis and Application of {base_name}", "description": f"Applying and analyzing concepts related to {base_name}", "goal_type": "practical", "bloom_level": 3},
+                ]
+            elif target_lang == "ar":
+                goals = [
+                    {"title": f"المفاهيم الأساسية ({base_name})", "description": f"استيعاب وفهم المفاهيم الجوهرية في {base_name}", "goal_type": "theoretical", "bloom_level": 2},
+                    {"title": f"التحليل والتطبيق ({base_name})", "description": f"تطبيق وتحليل المسائل المتعلقة بـ {base_name}", "goal_type": "practical", "bloom_level": 3},
                 ]
             else:
                 goals = [

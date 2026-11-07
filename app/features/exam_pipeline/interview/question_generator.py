@@ -148,6 +148,31 @@ class QuestionGenerator:
                 if is_likely_persian_question(repaired):
                     cleaned = repaired
             question = cleaned or question.strip()
+        elif language == "ar":
+            from ..language.arabic.text import (
+                build_arabic_repair_prompt,
+                clean_arabic_question,
+                is_likely_arabic_question,
+                needs_arabic_fluency_repair,
+            )
+            cleaned = clean_arabic_question(question)
+            if (
+                not is_likely_arabic_question(cleaned)
+                or needs_arabic_fluency_repair(cleaned)
+            ):
+                repaired = clean_arabic_question(
+                    self.llm.chat(
+                        [
+                            {
+                                "role": "user",
+                                "content": build_arabic_repair_prompt(cleaned or question),
+                            }
+                        ]
+                    )
+                )
+                if is_likely_arabic_question(repaired):
+                    cleaned = repaired
+            question = cleaned or question.strip()
         else:
             # English is a closed output-language boundary. A multilingual
             # model may otherwise echo Persian source/context even though the

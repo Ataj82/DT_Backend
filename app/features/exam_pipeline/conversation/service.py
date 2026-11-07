@@ -2560,6 +2560,10 @@ class ConversationService:
             from ..language.persian.text import build_persian_fallback_questions
             topic = description or name or indicator_id or str(getattr(goal, "title", "موضوع موردنظر"))
             candidates = build_persian_fallback_questions(topic)
+        elif resolved_language == "ar":
+            from ..language.arabic.text import build_arabic_fallback_questions
+            topic = description or name or indicator_id or str(getattr(goal, "title", "الموضوع المطلوب"))
+            candidates = build_arabic_fallback_questions(topic)
         else:
             topic = description or name or indicator_id or str(getattr(goal, "title", "the topic"))
             candidates = [
@@ -2576,7 +2580,11 @@ class ConversationService:
             context=(
                 "Deterministic Persian fallback used after repeated generation failure."
                 if resolved_language == "fa"
-                else "Deterministic fallback used after repeated duplicate generation."
+                else (
+                    "Deterministic Arabic fallback used after repeated generation failure."
+                    if resolved_language == "ar"
+                    else "Deterministic fallback used after repeated duplicate generation."
+                )
             ),
             indicator_id=indicator_id,
             difficulty=(difficulty if difficulty is not None else getattr(indicator, "difficulty", None)),

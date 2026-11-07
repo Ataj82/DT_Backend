@@ -17,8 +17,26 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
+import unicodedata
 
 logger = logging.getLogger("file_extractor")
+
+_OCR_ENGINE = None
+
+
+def _get_ocr_engine():
+    """Lazily initializes and caches the CPU-optimized RapidOCR engine."""
+    global _OCR_ENGINE
+    if _OCR_ENGINE is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            _OCR_ENGINE = RapidOCR()
+            logger.info("RapidOCR ONNX engine initialized successfully for PDF extraction.")
+        except Exception as exc:
+            logger.warning("RapidOCR engine not available: %s. OCR fallback disabled.", exc)
+            _OCR_ENGINE = False
+    return _OCR_ENGINE if _OCR_ENGINE is not False else None
+
 
 
 def extract_text_from_file_bytes(filename: str, content_bytes: bytes, max_chars: int = 25000) -> str:
@@ -120,7 +138,107 @@ def _extract_pptx(content_bytes: bytes) -> str:
 
 def _extract_pdf(content_bytes: bytes) -> str:
     """
-    Extracts readable text from PDF streams (handling FlateDecode streams and ASCII/Unicode strings).
+    High-accuracy, CPU-optimized PDF text extractor with 2-tier architecture:
+    1. Fast Native PyMuPDF extraction: Reads digital text, resolving CMap & embedded fonts in < 50ms.
+    2. CPU-Optimized OCR Fallback: If digital text is empty/insufficient (scanned document or image slides),
+       renders key syllabus/overview pages (up to first 6 pages) and runs RapidOCR (ONNX-powered deep learning).
+    3. Stream Decompression Fallback: If PyMuPDF is unavailable or raises an exception, falls back to
+       pure-Python FlateDecode stream extraction.
+    """
+    text = ""
+    # Tier 1 & 2: PyMuPDF + RapidOCR
+    try:
+        text = _extract_pdf_pymupdf_and_ocr(content_bytes)
+    except Exception as exc:
+        logger.warning("PyMuPDF/OCR pipeline failed (%s). Falling back to legacy stream parser.", exc)
+
+    if not text or len(text.strip()) < 30:
+        # Tier 3: Legacy pure-Python stream fallback
+        text = _extract_pdf_stream_fallback(content_bytes)
+
+    return text
+
+
+def _extract_pdf_pymupdf_and_ocr(content_bytes: bytes) -> str:
+    """Extracts text via PyMuPDF native CMap resolver or CPU-optimized RapidOCR."""
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        try:
+            import fitz
+        except ImportError:
+            return ""
+
+    doc = None
+    try:
+        doc = fitz.open(stream=content_bytes, filetype="pdf")
+    except Exception as exc:
+        logger.warning("Failed to open PDF with PyMuPDF: %s", exc)
+        return ""
+
+    if not doc or len(doc) == 0:
+        return ""
+
+    # 1. Native Digital Text Extraction
+    pages_text = []
+    total_valid_chars = 0
+    max_text_pages = min(len(doc), 40)
+    for i in range(max_text_pages):
+        page = doc[i]
+        pt = page.get_text("text") or ""
+        if pt.strip():
+            norm_pt = unicodedata.normalize("NFKC", pt)
+            pages_text.append(norm_pt)
+            valid_chars = sum(1 for c in norm_pt if c.isalnum() or "\u0600" <= c <= "\u06FF")
+            total_valid_chars += valid_chars
+
+    # If we extracted significant meaningful text, this is a digital PDF!
+    if total_valid_chars >= 80:
+        logger.info("PDF parsed via PyMuPDF native text extraction (%d chars, %d pages)", total_valid_chars, len(pages_text))
+        return "\n\n".join(pages_text)
+
+    # 2. OCR Mode: Scanned PDF or pure-image slides detected!
+    logger.info("PDF digital text is empty/insufficient (%d chars). Triggering CPU-optimized RapidOCR...", total_valid_chars)
+    ocr_engine = _get_ocr_engine()
+    if not ocr_engine:
+        logger.warning("RapidOCR engine not available; cannot perform OCR.")
+        return "\n\n".join(pages_text) if pages_text else ""
+
+    # For syllabus & course goal generation, examine up to the first 6 pages
+    max_ocr_pages = min(len(doc), 6)
+    ocr_text_blocks = []
+    for page_idx in range(max_ocr_pages):
+        page = doc[page_idx]
+        try:
+            # 150 DPI is optimal for CPU inference (high text sharpness with fast rendering and low RAM)
+            pix = page.get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            ocr_res, _ = ocr_engine(img_bytes)
+            if ocr_res:
+                page_lines = []
+                for item in ocr_res:
+                    if item and len(item) > 1 and item[1]:
+                        line_str = item[1].strip()
+                        score = item[2] if len(item) > 2 else 1.0
+                        if score >= 0.35 and len(line_str) > 1:
+                            page_lines.append(line_str)
+                if page_lines:
+                    ocr_text_blocks.append(f"\n--- صفحه {page_idx + 1} ---\n" + "\n".join(page_lines))
+        except Exception as ocr_err:
+            logger.warning("Failed to OCR page %d: %s", page_idx + 1, ocr_err)
+            continue
+
+    ocr_extracted = "\n\n".join(ocr_text_blocks).strip()
+    if ocr_extracted:
+        logger.info("RapidOCR successfully extracted %d characters from %d pages.", len(ocr_extracted), len(ocr_text_blocks))
+        return unicodedata.normalize("NFKC", ocr_extracted)
+
+    return "\n\n".join(pages_text)
+
+
+def _extract_pdf_stream_fallback(content_bytes: bytes) -> str:
+    """
+    Fallback pure-Python stream extractor (handling FlateDecode streams and ASCII/Unicode strings).
     """
     extracted_chunks = []
 
@@ -183,6 +301,7 @@ def _extract_pdf(content_bytes: bytes) -> str:
                 pass
 
     return "\n".join(extracted_chunks)
+
 
 
 def _clean_text(text: str) -> str:

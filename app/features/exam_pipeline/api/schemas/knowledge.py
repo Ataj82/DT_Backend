@@ -52,8 +52,8 @@ class CreateKnowledgeRequest(APIModel):
     # detects the dominant source language and stores the result.
     language: str | None = Field(
         default=None,
-        pattern=r"^(en|fa)$",
-        description="Optional knowledge-base language override: en or fa.",
+        pattern=r"^(en|fa|ar)$",
+        description="Optional knowledge-base language override: en, fa, or ar.",
     )
 
     metadata: dict[str, Any] = Field(

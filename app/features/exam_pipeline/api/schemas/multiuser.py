@@ -31,7 +31,7 @@ class UserResponse(APIModel):
 
 class UpdateProfileRequest(APIModel):
     # None means automatic: use the selected knowledge-base language.
-    preferred_language: str | None = Field(default=None, pattern=r"^(en|fa)$")
+    preferred_language: str | None = Field(default=None, pattern=r"^(en|fa|ar)$")
 
 
 class LoginResponse(APIModel):
@@ -49,7 +49,7 @@ class CreateAssignmentRequest(APIModel):
     goal_time_allocations_seconds: dict[str, int] | None = None
     passing_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
     allow_followup_questions: bool = True
-    language: str | None = Field(default=None, pattern=r"^(en|fa)$")
+    language: str | None = Field(default=None, pattern=r"^(en|fa|ar)$")
     starts_at: datetime | None = None
     ends_at: datetime | None = None
 

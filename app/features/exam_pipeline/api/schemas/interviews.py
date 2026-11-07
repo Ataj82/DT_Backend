@@ -80,8 +80,8 @@ class InterviewConfigurationRequest(APIModel):
     # interview resolves language from the selected knowledge base.
     language: str | None = Field(
         default=None,
-        pattern=r"^(en|fa)$",
-        description="Optional interview language override: en or fa.",
+        pattern=r"^(en|fa|ar)$",
+        description="Optional interview language override: en, fa, or ar.",
     )
 
     # Deprecated compatibility field. It is accepted so older clients do

@@ -2,13 +2,15 @@
 from __future__ import annotations
 from .resolver import normalize_language
 from .persian.question_prompt import PersianQuestionPromptBuilder
+from .arabic.question_prompt import ArabicQuestionPromptBuilder
 from ..interview.prompt_builder import QuestionPromptBuilder
 
 
 class LanguageAwareQuestionPromptBuilder:
-    def __init__(self, english=None, persian=None):
+    def __init__(self, english=None, persian=None, arabic=None):
         self.english = english or QuestionPromptBuilder()
         self.persian = persian or PersianQuestionPromptBuilder()
+        self.arabic = arabic or ArabicQuestionPromptBuilder()
 
     def build(self, request, context, history):
         # Session metadata is the authoritative language boundary. The
@@ -23,4 +25,7 @@ class LanguageAwareQuestionPromptBuilder:
             ) or "en"
         if language == "fa":
             return self.persian.build(request, context, history)
+        if language == "ar":
+            return self.arabic.build(request, context, history)
         return self.english.build(request, context, history)
+
