@@ -350,6 +350,114 @@ def estimate_head_pose_pnp(
     return fallback_rvec, fallback_tvec, 0.0, 0.0, 0.0
 
 
+def _filter_valid_distinct_faces(raw_boxes, gray: np.ndarray, bgr_img: np.ndarray) -> list:
+    """
+    Applies Non-Maximum Suppression (NMS), relative size gating, and anatomical/skin-chrominance
+    verification to eliminate false-positive secondary face boxes (e.g. overlapping detections,
+    collar/headphone artifacts, or background wall objects).
+    """
+    if raw_boxes is None or len(raw_boxes) == 0:
+        return []
+    boxes = [ [int(b[0]), int(b[1]), int(b[2]), int(b[3])] for b in raw_boxes ]
+    if len(boxes) == 1:
+        return boxes
+
+    h, w = gray.shape[:2]
+    frame_area = float(h * w)
+    boxes.sort(key=lambda b: b[2] * b[3], reverse=True)
+
+    primary = boxes[0]
+    primary_area = float(primary[2] * primary[3])
+    accepted = [primary]
+
+    for cand in boxes[1:]:
+        cx, cy, cw, ch = cand
+        cand_area = float(cw * ch)
+        # 1. Size & Aspect Ratio Gate: secondary face must be at least 25% of primary face and >= 1.8% of frame
+        if cand_area < primary_area * 0.25 or cand_area < frame_area * 0.018:
+            continue
+        aspect = cw / float(max(1, ch))
+        if aspect < 0.65 or aspect > 1.45:
+            continue
+
+        # 2. NMS & Center Distance Gate against all accepted faces
+        cand_cx = cx + cw * 0.5
+        cand_cy = cy + ch * 0.5
+        is_duplicate = False
+        for acc in accepted:
+            ax, ay, aw, ah = acc
+            acc_cx = ax + aw * 0.5
+            acc_cy = ay + ah * 0.5
+
+            # Check if center of candidate lies inside accepted box
+            if ax <= cand_cx <= (ax + aw) and ay <= cand_cy <= (ay + ah):
+                is_duplicate = True
+                break
+
+            # Check normalized center proximity
+            avg_w = (cw + aw) * 0.5
+            avg_h = (ch + ah) * 0.5
+            if abs(cand_cx - acc_cx) < avg_w * 0.68 and abs(cand_cy - acc_cy) < avg_h * 0.68:
+                is_duplicate = True
+                break
+
+            # Check IoU
+            ix1 = max(cx, ax)
+            iy1 = max(cy, ay)
+            ix2 = min(cx + cw, ax + aw)
+            iy2 = min(cy + ch, ay + ah)
+            if ix2 > ix1 and iy2 > iy1:
+                inter = float((ix2 - ix1) * (iy2 - iy1))
+                union = cand_area + float(aw * ah) - inter
+                if union > 0 and (inter / union) > 0.18:
+                    is_duplicate = True
+                    break
+
+        if is_duplicate:
+            continue
+
+        # 3. Anatomical / Skin-Texture Verification Gate for secondary face
+        roi_gray = gray[max(0, cy):min(h, cy + ch), max(0, cx):min(w, cx + cw)]
+        if roi_gray.size == 0:
+            continue
+        tex_std = float(np.std(roi_gray))
+        if tex_std < 14.0 or tex_std > 82.0:
+            continue
+
+        has_eye = False
+        if _EYE_CASCADE is not None:
+            eye_y1 = max(0, int(ch * 0.14))
+            eye_y2 = min(roi_gray.shape[0], int(ch * 0.58))
+            eye_roi = roi_gray[eye_y1:eye_y2, :]
+            if eye_roi.size > 0:
+                min_eye = (max(8, int(cw * 0.12)), max(6, int(ch * 0.09)))
+                cand_eyes = _EYE_CASCADE.detectMultiScale(eye_roi, scaleFactor=1.1, minNeighbors=3, minSize=min_eye)
+                if len(cand_eyes) >= 1:
+                    has_eye = True
+
+        has_skin = False
+        if bgr_img is not None and bgr_img.ndim == 3:
+            ix1 = max(0, cx + int(cw * 0.15))
+            iy1 = max(0, cy + int(ch * 0.15))
+            ix2 = min(w, cx + int(cw * 0.85))
+            iy2 = min(h, cy + int(ch * 0.85))
+            roi_bgr = bgr_img[iy1:iy2, ix1:ix2]
+            if roi_bgr.size > 0:
+                ycrcb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2YCrCb)
+                cr = ycrcb[:, :, 1]
+                cb = ycrcb[:, :, 2]
+                skin_mask = (cr >= 131) & (cr <= 178) & (cb >= 76) & (cb <= 129)
+                skin_ratio = float(np.count_nonzero(skin_mask)) / float(skin_mask.size)
+                if skin_ratio >= 0.25:
+                    has_skin = True
+
+        # Require either detected eye + plausible skin, or strong skin ratio with high contrast
+        if (has_eye and has_skin) or (has_eye and tex_std >= 20.0) or (has_skin and tex_std >= 22.0):
+            accepted.append(cand)
+
+    return accepted
+
+
 def analyze_focal_attention(
     img: np.ndarray, 
     user_id: str | None = None, 
@@ -371,7 +479,8 @@ def analyze_focal_attention(
     gray_flipped = cv2.flip(gray, 1)
 
     min_dim = min(h, w)
-    min_face_size = (max(70, int(min_dim * 0.18)), max(70, int(min_dim * 0.18)))
+    min_face_px = max(44, int(min_dim * 0.15))
+    min_face_size = (min_face_px, min_face_px)
 
     # 1. Bidirectional Profile Detection (detects head turned left or right)
     profs_r = _PROFILE_CASCADE.detectMultiScale(gray, scaleFactor=1.25, minNeighbors=4, minSize=min_face_size) if _PROFILE_CASCADE else []
@@ -380,11 +489,19 @@ def analyze_focal_attention(
     has_profile_left = len(profs_l) > 0
     has_profile = has_profile_right or has_profile_left
 
-    # 2. Frontal Face Detection
+    # 2. Frontal Face Detection (with CLAHE fallback for dim/backlit lighting and strict NMS for multiple faces)
     frontals = _FACE_CASCADE.detectMultiScale(gray, scaleFactor=1.12, minNeighbors=4, minSize=min_face_size) if _FACE_CASCADE else []
+    if _FACE_CASCADE is not None and len(frontals) == 0 and not has_profile:
+        try:
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray_clahe = clahe.apply(gray)
+            frontals = _FACE_CASCADE.detectMultiScale(gray_clahe, scaleFactor=1.12, minNeighbors=4, minSize=min_face_size)
+        except Exception:
+            frontals = []
     if _FACE_CASCADE is None and len(frontals) == 0:
         frontals = [[int(w * 0.25), int(h * 0.2), int(w * 0.5), int(h * 0.6)]]
 
+    frontals = _filter_valid_distinct_faces(frontals, gray, img)
     face_count = len(frontals)
     has_multiple_faces = bool(face_count > 1)
 
