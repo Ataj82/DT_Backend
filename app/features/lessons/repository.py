@@ -19,7 +19,7 @@ def get_candidate_lesson_ids(lesson_id: UUID) -> List[UUID]:
 
 def resolve_lesson_id(lesson_id: UUID) -> UUID:
     if lesson_id in (OS_COURSE_UUID, FRONTEND_OS_UUID):
-        return FRONTEND_OS_UUID
+        return OS_COURSE_UUID
     return lesson_id
 
 

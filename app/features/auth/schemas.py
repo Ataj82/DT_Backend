@@ -22,10 +22,17 @@ class AuthUserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     user_id: UUID
+    id: Optional[UUID] = None
     username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    profile_url: str | None = None
     user_type: str | None = None
+    role: str | None = None
     email: str | None = None
-    is_active: bool
+    theme: str | None = None
+    language: str | None = None
+    is_active: bool = True
 
 
 class TokenResponse(BaseModel):
@@ -36,6 +43,8 @@ class TokenResponse(BaseModel):
 
 class LoginResponse(TokenResponse):
     user: AuthUserResponse
+    role: Optional[str] = None
+    token: Optional[str] = None
 
 
 class RefreshResponse(TokenResponse):
@@ -169,6 +178,16 @@ class ResetPasswordRequest(BaseModel):
 
 class GoogleLoginRequest(BaseModel):
     credential: Optional[str] = None
+    access_token: Optional[str] = None
+    email: Optional[str] = None
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    remember: bool = False
+
+
+class LinkedInLoginRequest(BaseModel):
+    code: Optional[str] = None
+    redirect_uri: Optional[str] = None
     access_token: Optional[str] = None
     email: Optional[str] = None
     name: Optional[str] = None

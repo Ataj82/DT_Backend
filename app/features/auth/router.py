@@ -14,6 +14,7 @@ from app.features.auth.schemas import (
     LoginRequest,
     ExternalLoginRequest,
     LoginResponse,
+    AuthUserResponse,
     RefreshResponse,
     MessageResponse,
     SessionResponse,
@@ -22,6 +23,7 @@ from app.features.auth.schemas import (
     ForgotPasswordRequest,
     ResetPasswordRequest,
     GoogleLoginRequest,
+    LinkedInLoginRequest,
 )
 from app.features.auth.services import AuthService
 from app.features.users.models import User
@@ -151,11 +153,66 @@ async def login_google(
         max_age=result["refresh_token_max_age"],
     )
 
+    user_obj = result["user"]
     return LoginResponse(
         access_token=result["access_token"],
         token_type="bearer",
         expires_in=result["access_token_expires_in"],
-        user=result["user"],
+        user=AuthUserResponse(
+            user_id=user_obj.user_id,
+            id=user_obj.user_id,
+            username=user_obj.username,
+            first_name=user_obj.first_name,
+            last_name=user_obj.last_name,
+            profile_url=user_obj.profile_url,
+            user_type=user_obj.user_type,
+            role=user_obj.user_type,
+            email=getattr(user_obj, "email", None),
+            theme=getattr(user_obj, "theme", "light") or "light",
+            language=getattr(user_obj, "language", "fa") or "fa",
+            is_active=user_obj.is_active if user_obj.is_active is not None else True,
+        ),
+        role=result.get("role") or user_obj.user_type,
+        token=result.get("token") or result["access_token"],
+    )
+
+
+@router.post("/linkedin", response_model=LoginResponse, status_code=status.HTTP_200_OK)
+async def login_linkedin(
+    payload: LinkedInLoginRequest,
+    request: Request,
+    response: Response,
+    service: AuthService = Depends(get_auth_service),
+):
+    result = await service.login_with_linkedin(payload, request)
+
+    set_refresh_cookie(
+        response=response,
+        refresh_token=result["refresh_token"],
+        max_age=result["refresh_token_max_age"],
+    )
+
+    user_obj = result["user"]
+    return LoginResponse(
+        access_token=result["access_token"],
+        token_type="bearer",
+        expires_in=result["access_token_expires_in"],
+        user=AuthUserResponse(
+            user_id=user_obj.user_id,
+            id=user_obj.user_id,
+            username=user_obj.username,
+            first_name=user_obj.first_name,
+            last_name=user_obj.last_name,
+            profile_url=user_obj.profile_url,
+            user_type=user_obj.user_type,
+            role=user_obj.user_type,
+            email=getattr(user_obj, "email", None),
+            theme=getattr(user_obj, "theme", "light") or "light",
+            language=getattr(user_obj, "language", "fa") or "fa",
+            is_active=user_obj.is_active if user_obj.is_active is not None else True,
+        ),
+        role=result.get("role") or user_obj.user_type,
+        token=result.get("token") or result["access_token"],
     )
 
 

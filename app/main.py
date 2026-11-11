@@ -139,8 +139,10 @@ async def startup_event():
         import app.features.lessons.models
         import app.features.auth.models
         import app.features.biometrics.db_models
+        from sqlalchemy import text
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);"))
         print("[startup] Database schema verified/created successfully.")
     except Exception as e:
         print(f"[startup] Warning: schema creation error: {e}")

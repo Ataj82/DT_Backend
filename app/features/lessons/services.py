@@ -247,6 +247,28 @@ class LessonService:
         from datetime import datetime as dt, timezone, timedelta
         tehran_tz = timezone(timedelta(hours=3, minutes=30))
 
+        def _get_target_date():
+            exam_date_raw = str(data.get("exam_date") or "").strip()
+            if exam_date_raw:
+                ascii_date = exam_date_raw
+                for fa_d, en_d in zip("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"):
+                    ascii_date = ascii_date.replace(fa_d, en_d)
+                parts = [int(p) for p in ascii_date.replace("-", "/").split("/") if p.isdigit()]
+                if len(parts) == 3:
+                    if parts[0] > 1900:
+                        return dt(parts[0], parts[1], parts[2]).date()
+                    elif 1300 < parts[0] < 1600:
+                        from app.features.admin.router import _jalali_to_gregorian
+                        gy, gm, gd = _jalali_to_gregorian(parts[0], parts[1], parts[2])
+                        return dt(gy, gm, gd).date()
+                    elif parts[2] > 1900:
+                        return dt(parts[2], parts[1], parts[0]).date()
+                    elif 1300 < parts[2] < 1600:
+                        from app.features.admin.router import _jalali_to_gregorian
+                        gy, gm, gd = _jalali_to_gregorian(parts[2], parts[1], parts[0])
+                        return dt(gy, gm, gd).date()
+            return dt.now(tehran_tz).date()
+
         def _parse_time_val(val):
             if not val:
                 return None
@@ -264,8 +286,8 @@ class LessonService:
             # HH:MM local clock string
             try:
                 t = dt.strptime(s, "%H:%M").time()
-                local_now = dt.now(tehran_tz)
-                local_dt = dt.combine(local_now.date(), t, tzinfo=tehran_tz)
+                target_date = _get_target_date()
+                local_dt = dt.combine(target_date, t, tzinfo=tehran_tz)
                 return local_dt.astimezone(timezone.utc)
             except Exception:
                 return None

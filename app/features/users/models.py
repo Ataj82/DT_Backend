@@ -31,6 +31,7 @@ class User(Base):
 
 
     username = Column(String, unique=True, nullable=False)
+    email = Column(String(255), nullable=True)
     hashed_password = Column(String, nullable=False)
 
     first_name = Column(String, nullable=True)

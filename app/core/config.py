@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # --- Redis ---
     REDIS_URL: str = Field(default="redis://edu-redis:6379/0")
 
+    # --- OAuth / Social Login ---
+    GOOGLE_CLIENT_ID: str = Field(default="")
+    GOOGLE_CLIENT_SECRET: str = Field(default="")
+    LINKEDIN_CLIENT_ID: str = Field(default="")
+    LINKEDIN_CLIENT_SECRET: str = Field(default="")
+
     model_config = SettingsConfigDict(
         case_sensitive=False,
     )

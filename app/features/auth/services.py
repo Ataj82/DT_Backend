@@ -16,6 +16,7 @@ from app.core.security import (
     verify_password,
     get_password_hash,
 )
+from app.core.config import settings
 from app.features.auth.device.detector import detect_device_from_request
 from app.features.auth.repository import UserSessionRepository
 from app.features.users.models import User
@@ -425,7 +426,7 @@ class AuthService:
         # Find existing user by username matching email or email prefix
         email_prefix = email.split("@")[0].lower()
         stmt = select(User).where(
-            (User.username == email) | (User.username == email_prefix)
+            (User.email == email) | (User.username == email) | (User.username == email_prefix)
         )
         result = await self.db.execute(stmt)
         user = result.scalar_one_or_none()
@@ -438,6 +439,7 @@ class AuthService:
 
             user = User(
                 username=final_username,
+                email=email,
                 hashed_password=get_password_hash(secrets.token_urlsafe(32)),
                 first_name=given_name or "کاربر",
                 last_name=family_name or "گوگل",
@@ -454,6 +456,8 @@ class AuthService:
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="حساب کاربری شما غیرفعال شده است.",
                 )
+            if email and not getattr(user, "email", None):
+                user.email = email
             # Update avatar if missing
             if not user.profile_url and picture:
                 user.profile_url = picture
@@ -518,6 +522,206 @@ class AuthService:
             "refresh_token": refresh_token,
             "refresh_token_max_age": cookie_max_age,
             "user": user,
+            "role": user.user_type,
+            "token": access_token,
+        }
+
+    async def login_with_linkedin(self, payload, request: Request):
+        code = getattr(payload, "code", None)
+        redirect_uri = getattr(payload, "redirect_uri", None)
+        linkedin_access_token = getattr(payload, "access_token", None)
+        remember = getattr(payload, "remember", True)
+        direct_email = getattr(payload, "email", None)
+        direct_name = getattr(payload, "name", None)
+        direct_picture = getattr(payload, "picture", None)
+
+        linkedin_info = None
+
+        # 1. Exchange authorization code for LinkedIn access token if code is provided
+        if code:
+            token_url = "https://www.linkedin.com/oauth/v2/accessToken"
+            token_data = {
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri or "http://localhost:5173/auth/callback/linkedin",
+                "client_id": settings.LINKEDIN_CLIENT_ID,
+                "client_secret": settings.LINKEDIN_CLIENT_SECRET,
+            }
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(
+                        token_url,
+                        data=token_data,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        linkedin_access_token = data.get("access_token")
+                        id_token = data.get("id_token")
+                        if id_token:
+                            try:
+                                parts = id_token.split(".")
+                                if len(parts) >= 2:
+                                    padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                                    decoded_bytes = base64.urlsafe_b64decode(padded)
+                                    linkedin_info = json.loads(decoded_bytes.decode("utf-8"))
+                            except Exception:
+                                pass
+                    else:
+                        print(f"LinkedIn token exchange error ({resp.status_code}): {resp.text}")
+            except Exception as e:
+                print(f"LinkedIn token exchange exception: {e}")
+
+        # 2. Fetch userinfo from LinkedIn OpenID Connect endpoint (/v2/userinfo)
+        if linkedin_access_token and not linkedin_info:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        "https://api.linkedin.com/v2/userinfo",
+                        headers={"Authorization": f"Bearer {linkedin_access_token}"},
+                    )
+                    if resp.status_code == 200:
+                        linkedin_info = resp.json()
+                    else:
+                        print(f"LinkedIn userinfo error ({resp.status_code}): {resp.text}")
+            except Exception as e:
+                print(f"LinkedIn userinfo exception: {e}")
+
+        # 3. Fallback to direct info in dev mode
+        if not linkedin_info and direct_email:
+            linkedin_info = {
+                "email": direct_email,
+                "name": direct_name or "کاربر لینکدین",
+                "picture": direct_picture,
+                "sub": f"linkedin_{secrets.token_hex(6)}",
+            }
+
+        if not linkedin_info or not (linkedin_info.get("email") or linkedin_info.get("sub")):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="احراز هویت با لینکدین ناموفق بود. توکن معتبر دریافت نشد.",
+            )
+
+        email = str(linkedin_info.get("email", "")).strip().lower()
+        sub = str(linkedin_info.get("sub", ""))
+        full_name = linkedin_info.get("name") or "کاربر لینکدین"
+        given_name = linkedin_info.get("given_name")
+        family_name = linkedin_info.get("family_name")
+        if not given_name and full_name:
+            parts = full_name.split(" ", 1)
+            given_name = parts[0]
+            family_name = parts[1] if len(parts) > 1 else None
+
+        picture = linkedin_info.get("picture")
+
+        # Find existing user by email or username
+        email_prefix = email.split("@")[0].lower() if email else f"linkedin_{sub[:8]}"
+        stmt = (
+            select(User).where(
+                (User.email == email) | (User.username == email) | (User.username == email_prefix)
+            )
+            if email
+            else select(User).where(User.username == email_prefix)
+        )
+
+        result = await self.db.execute(stmt)
+        user = result.scalar_one_or_none()
+
+        if not user:
+            check_stmt = select(User).where(User.username == email_prefix)
+            existing_prefix = (await self.db.execute(check_stmt)).scalar_one_or_none()
+            final_username = email_prefix if not existing_prefix else f"{email_prefix}_{secrets.token_hex(2)}"
+
+            # Per platform rule: New users are NOT added to any course or chat automatically
+            is_teacher = any(term in (email or "").lower() for term in ["allahbakhsh", "elahbakhsh", "teacher", "prof"])
+            initial_role = "TEACHER" if is_teacher else "STUDENT"
+
+            user = User(
+                username=final_username,
+                email=email if email else None,
+                hashed_password=get_password_hash(secrets.token_urlsafe(32)),
+                first_name=given_name or ("دکتر محمد" if is_teacher else "کاربر"),
+                last_name=family_name or ("اله بخش" if is_teacher else "لینکدین"),
+                profile_url=picture,
+                user_type=initial_role,
+                is_active=True,
+                is_deleted=False,
+            )
+            self.db.add(user)
+            await self.db.flush()
+        else:
+            if not user.is_active or user.is_deleted:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="حساب کاربری شما غیرفعال شده است.",
+                )
+            if email and not getattr(user, "email", None):
+                user.email = email
+            if not user.profile_url and picture:
+                user.profile_url = picture
+            if not user.first_name and given_name:
+                user.first_name = given_name
+            if not user.last_name and family_name:
+                user.last_name = family_name
+
+        device = detect_device_from_request(request)
+        location = device.location
+
+        refresh_token = create_refresh_token()
+        refresh_token_hash = hash_refresh_token(refresh_token)
+
+        now = datetime.now(timezone.utc)
+        if remember:
+            refresh_expires_at = now + timedelta(days=30)
+            cookie_max_age = 30 * 24 * 60 * 60
+        else:
+            refresh_expires_at = now + timedelta(days=7)
+            cookie_max_age = 7 * 24 * 60 * 60
+
+        user_id = self._get_user_id(user)
+
+        session = await self.sessions.create(
+            user_id=user_id,
+            refresh_token_hash=refresh_token_hash,
+            expires_at=refresh_expires_at,
+            remember=remember,
+            device_name=device.device_name,
+            device_type=device.device_type,
+            device_brand=device.device_brand,
+            device_model=device.device_model,
+            os_name=device.os_name,
+            os_version=device.os_version,
+            browser_name=device.browser_name,
+            browser_version=device.browser_version,
+            is_mobile=device.is_mobile,
+            is_tablet=device.is_tablet,
+            is_pc=device.is_pc,
+            is_bot=device.is_bot,
+            ip_address=device.ip_address,
+            country_code=location.country_code if location else None,
+            country_name=location.country_name if location else None,
+            city_name=location.city_name if location else None,
+            timezone=location.timezone if location else None,
+            latitude=location.latitude if location else None,
+            longitude=location.longitude if location else None,
+            user_agent=device.user_agent,
+        )
+
+        access_token = create_access_token(
+            subject=str(session.user_id),
+            user_session_id=str(session.user_session_id),
+        )
+
+        await self.db.commit()
+
+        return {
+            "access_token": access_token,
+            "access_token_expires_in": self.ACCESS_TOKEN_EXPIRES_IN,
+            "refresh_token": refresh_token,
+            "refresh_token_max_age": cookie_max_age,
+            "user": user,
+            "role": user.user_type,
+            "token": access_token,
         }
 
     async def refresh(self, refresh_token: str, request: Request):

@@ -595,13 +595,13 @@ async def create_exam_request(
 
     # 7. Persist to lesson_quizzes table in PostgreSQL
     try:
-        from app.database import async_session
+        from app.core.database import async_session
         from app.features.lessons.models import LessonQuiz
-        from app.features.lessons.repository import resolve_lesson_id, FRONTEND_OS_UUID
+        from app.features.lessons.repository import resolve_lesson_id, OS_COURSE_UUID
         import uuid as _uuid
 
         raw_lid = request.lesson_id or request.course_id
-        resolved_lid = resolve_lesson_id(_uuid.UUID(str(raw_lid))) if raw_lid else FRONTEND_OS_UUID
+        resolved_lid = resolve_lesson_id(_uuid.UUID(str(raw_lid))) if raw_lid else OS_COURSE_UUID
         prof_uuid = _uuid.UUID(str(current_user.id))
 
         async with async_session() as session:
@@ -1030,6 +1030,32 @@ async def my_student_exams(
             end_utc = assignment.ends_at if assignment.ends_at.tzinfo else assignment.ends_at.replace(tzinfo=timezone.utc)
             if now_utc > end_utc:
                 is_assignment_ended = True
+        elif config_snapshot and config_snapshot.get("exam_date"):
+            try:
+                raw_ed = str(config_snapshot["exam_date"]).strip()
+                ascii_ed = raw_ed
+                for fa_d, en_d in zip("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"):
+                    ascii_ed = ascii_ed.replace(fa_d, en_d)
+                parts = [int(p) for p in ascii_ed.replace("-", "/").split("/") if p.isdigit()]
+                if len(parts) == 3:
+                    if parts[0] > 1900:
+                        ed_date = datetime(parts[0], parts[1], parts[2]).date()
+                    elif 1300 < parts[0] < 1600:
+                        from app.features.admin.router import _jalali_to_gregorian
+                        gy, gm, gd = _jalali_to_gregorian(parts[0], parts[1], parts[2])
+                        ed_date = datetime(gy, gm, gd).date()
+                    elif parts[2] > 1900:
+                        ed_date = datetime(parts[2], parts[1], parts[0]).date()
+                    elif 1300 < parts[2] < 1600:
+                        from app.features.admin.router import _jalali_to_gregorian
+                        gy, gm, gd = _jalali_to_gregorian(parts[2], parts[1], parts[0])
+                        ed_date = datetime(gy, gm, gd).date()
+                    else:
+                        ed_date = None
+                    if ed_date and now_tehran.date() > ed_date:
+                        is_assignment_ended = True
+            except Exception:
+                pass
 
         if enrollment.status == EnrollmentStatus.ASSIGNED and my_slot and not is_assignment_ended:
             is_today = True
@@ -1080,6 +1106,8 @@ async def my_student_exams(
         if is_assignment_ended and enrollment.status == EnrollmentStatus.ASSIGNED:
             card_status = "expired"
 
+        effective_exam_date = config_snapshot.get("exam_date") or (assignment.starts_at.strftime("%Y/%m/%d") if assignment.starts_at else "1405/07/20")
+
         cards.append(
             StudentExamCardResponse(
                 id=assignment.id,
@@ -1088,7 +1116,7 @@ async def my_student_exams(
                 title=assignment.title,
                 course="سیستم عامل",
                 topic=topic,
-                date=assignment.starts_at.strftime("%Y/%m/%d") if assignment.starts_at else "1405/07/20",
+                date=effective_exam_date,
                 start_at=assignment.starts_at.isoformat() if assignment.starts_at else None,
                 end_at=assignment.ends_at.isoformat() if assignment.ends_at else None,
                 duration=assignment.duration_seconds // 60,
